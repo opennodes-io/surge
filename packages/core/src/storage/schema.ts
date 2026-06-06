@@ -1,0 +1,135 @@
+// SQL schema for the Surge local-first SQLite database.
+// Hand-written CREATE TABLE statements (rather than an ORM/migration tool) keep
+// the schema portable across the Electron desktop and the standalone Node MCP
+// server, both of which open the same file via @libsql/client (an N-API module
+// that is ABI-stable across runtimes, so no native rebuild is required).
+
+export const SCHEMA_STATEMENTS: string[] = [
+  `CREATE TABLE IF NOT EXISTS collections (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    parent_id TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    rev INTEGER NOT NULL DEFAULT 1,
+    origin_device_id TEXT
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS bookmarks (
+    id TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    title TEXT,
+    description TEXT,
+    favicon TEXT,
+    kind TEXT NOT NULL DEFAULT 'web',
+    target_ref TEXT,
+    collection_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    rev INTEGER NOT NULL DEFAULT 1,
+    origin_device_id TEXT
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS tags (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    color TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    rev INTEGER NOT NULL DEFAULT 1,
+    origin_device_id TEXT
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS bookmark_tags (
+    bookmark_id TEXT NOT NULL,
+    tag_id TEXT NOT NULL,
+    PRIMARY KEY (bookmark_id, tag_id)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS history (
+    id TEXT PRIMARY KEY,
+    url TEXT,
+    title TEXT,
+    kind TEXT NOT NULL DEFAULT 'web',
+    target_ref TEXT,
+    visited_at INTEGER NOT NULL,
+    dwell_ms INTEGER,
+    meta TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    rev INTEGER NOT NULL DEFAULT 1,
+    origin_device_id TEXT
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    settings TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    rev INTEGER NOT NULL DEFAULT 1,
+    origin_device_id TEXT
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    profile_id TEXT,
+    name TEXT NOT NULL,
+    description TEXT,
+    kind TEXT NOT NULL DEFAULT 'saved-toolset',
+    spec TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    rev INTEGER NOT NULL DEFAULT 1,
+    origin_device_id TEXT
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS chat_sessions (
+    id TEXT PRIMARY KEY,
+    profile_id TEXT,
+    title TEXT,
+    model TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    rev INTEGER NOT NULL DEFAULT 1,
+    origin_device_id TEXT
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS chat_messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT,
+    tool_calls TEXT,
+    tool_call_id TEXT,
+    name TEXT,
+    seq INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    rev INTEGER NOT NULL DEFAULT 1,
+    origin_device_id TEXT
+  )`,
+
+  // Reserved for the future sync layer (push/pull bookkeeping per table).
+  `CREATE TABLE IF NOT EXISTS sync_state (
+    table_name TEXT PRIMARY KEY,
+    last_pushed_rev INTEGER,
+    last_pulled_at INTEGER
+  )`,
+
+  `CREATE INDEX IF NOT EXISTS idx_history_visited ON history(visited_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_history_url ON history(url)`,
+  `CREATE INDEX IF NOT EXISTS idx_bookmarks_collection ON bookmarks(collection_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_bookmarks_url ON bookmarks(url)`,
+  `CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)`,
+];

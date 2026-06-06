@@ -1,0 +1,29 @@
+{
+  "name": "@surge/bookmarks-history-mcp",
+  "version": "1.0.0",
+  "description": "Standalone MCP server exposing Surge bookmarks & history over a shared local SQLite DB — usable by any MCP client (Claude Desktop, Cursor, ...).",
+  "type": "module",
+  "bin": {
+    "surge-bookmarks-mcp": "./dist/stdio.js"
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsup",
+    "start": "node dist/stdio.js",
+    "start:http": "node dist/http.js",
+    "dev": "tsx src/stdio.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@surge/core": "workspace:*",
+    "@types/node": "^22.0.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
