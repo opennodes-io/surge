@@ -1,0 +1,29 @@
+{
+  "name": "@surge/mobile",
+  "version": "1.0.0",
+  "description": "Surge mobile shell (Capacitor) — reuses @surge/core; embedded-browser/Web->MCP features are gated off.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "cap:add:android": "cap add android",
+    "cap:add:ios": "cap add ios",
+    "cap:sync": "cap sync"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.2.0",
+    "@surge/core": "workspace:*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.4.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.2.0"
+  }
+}
