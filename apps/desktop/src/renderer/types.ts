@@ -56,6 +56,12 @@ declare global {
         list: (opts?: { kind?: string; limit?: number }) => Promise<HistoryEntry[]>;
         clear: (opts?: { kind?: string; olderThanDays?: number }) => Promise<{ cleared: number }>;
       };
+      agents: {
+        generate: (model: string) => Promise<{ success: boolean; spec?: WebAgentSpec; usesCode?: boolean; error?: string }>;
+        save: (spec: WebAgentSpec) => Promise<{ success: boolean; agent?: SavedAgent; error?: string }>;
+        list: () => Promise<SavedAgent[]>;
+        remove: (id: string, domain?: string) => Promise<{ removed: boolean }>;
+      };
       search: {
         web: (query: string) => Promise<{ results: SearchResult[]; error?: string }>;
       };
@@ -197,6 +203,46 @@ export interface HistoryEntry {
   targetRef?: string | null;
   visitedAt: number;
   meta?: Record<string, unknown> | null;
+}
+
+// ── Per-site agents (codegen) ──────────────────────────
+export interface AgentStep {
+  action: string;
+  selector?: string;
+  url?: string;
+  value?: string;
+  valueFromParam?: string;
+  attribute?: string;
+  key?: string;
+  saveAs?: string;
+  timeoutMs?: number;
+}
+
+export interface AgentToolDef {
+  name: string;
+  description: string;
+  parameters: { type: 'object'; properties: Record<string, { type: string; description?: string }>; required?: string[] };
+  steps?: AgentStep[];
+  code?: string;
+}
+
+export interface WebAgentSpec {
+  version: 1;
+  source: 'web-mcp' | 'codegen';
+  domain: string;
+  name: string;
+  description?: string;
+  tools: AgentToolDef[];
+  codeApproved?: boolean;
+}
+
+export interface SavedAgent {
+  id: string;
+  name: string;
+  description: string | null;
+  kind: string;
+  spec: WebAgentSpec | null;
+  createdAt: number;
 }
 
 export interface McpTool {

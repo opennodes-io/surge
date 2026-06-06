@@ -97,6 +97,14 @@ contextBridge.exposeInMainWorld('surge', {
     clear: (opts?: any) => ipcRenderer.invoke('history:clear', opts),
   },
 
+  // Per-site agents (generate → approve → persist as MCP virtual server)
+  agents: {
+    generate: (model: string) => ipcRenderer.invoke('agents:generate', model),
+    save: (spec: any) => ipcRenderer.invoke('agents:save', spec),
+    list: () => ipcRenderer.invoke('agents:list'),
+    remove: (id: string, domain?: string) => ipcRenderer.invoke('agents:remove', id, domain),
+  },
+
   // Web search
   search: {
     web: (query: string) => ipcRenderer.invoke('search:web', query),

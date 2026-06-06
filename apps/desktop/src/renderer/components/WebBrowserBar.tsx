@@ -15,6 +15,8 @@ interface WebBrowserBarProps {
   onOpenInBrowser?: () => void;
   onOpenExternal?: () => void;
   onBookmark?: () => void;
+  onCreateAgent?: () => void;
+  creatingAgent?: boolean;
 }
 
 const WebBrowserBar: React.FC<WebBrowserBarProps> = ({
@@ -29,6 +31,8 @@ const WebBrowserBar: React.FC<WebBrowserBarProps> = ({
   onOpenInBrowser,
   onOpenExternal,
   onBookmark,
+  onCreateAgent,
+  creatingAgent,
 }) => {
   const [url, setUrl] = useState(currentUrl);
   const [isDetecting, setIsDetecting] = useState(false);
@@ -114,6 +118,11 @@ const WebBrowserBar: React.FC<WebBrowserBarProps> = ({
         {onBookmark && currentUrl && (
           <button className="btn-icon" onClick={onBookmark} title="Bookmark this page">
             <IconStar size={15} />
+          </button>
+        )}
+        {onCreateAgent && currentUrl && (
+          <button className="btn-icon" onClick={onCreateAgent} title="Create an MCP agent for this site" disabled={creatingAgent}>
+            {creatingAgent ? <div className="spinner spinner-sm" /> : <span style={{ fontSize: 14 }}>✨</span>}
           </button>
         )}
         {onOpenExternal && currentUrl && (

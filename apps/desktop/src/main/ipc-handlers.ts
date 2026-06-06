@@ -12,6 +12,8 @@ import {
 import { SettingsService } from './services/settings-service';
 import { BrowserService } from './services/browser-service';
 import { registerLocalDataHandlers } from './services/local-data';
+import { registerAgentHandlers } from './services/agents';
+import { ElectronBrowserPort } from './services/electron-browser-port';
 
 let aiService: AiService;
 let mcpManager: McpManager;
@@ -43,6 +45,10 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
 
   // ── Local-first data: storage, bookmarks/history IPC + virtual server, discovery ──
   registerLocalDataHandlers(mcpManager, settingsService);
+
+  // ── Agentic per-site agents (generate → approve → persist → virtual server) ──
+  const browserPort = new ElectronBrowserPort(getBrowserView);
+  registerAgentHandlers(mcpManager, aiService, browserService, browserPort, settingsService);
 
   // ── Tool execution router (uniform over real + virtual + MCPWeb servers) ──
   const executeTool = async (tc: PendingToolCall): Promise<ToolExecutionResult> => {

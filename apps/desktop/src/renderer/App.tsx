@@ -5,8 +5,9 @@ import ServerPanel from './components/ServerPanel';
 import SettingsPanel from './components/SettingsPanel';
 import WebBrowserBar from './components/WebBrowserBar';
 import McpWebPanel from './components/McpWebPanel';
+import AgentApprovalModal from './components/AgentApprovalModal';
 import { IconStar, IconBolt, IconGlobe, IconSettings, IconMinus, IconX, IconMaximize, IconRestore } from './components/Icons';
-import type { AppMode, ChatMessage, AiModel, McpWebCapabilities, McpWebConnectResult, McpBDetectResult } from './types';
+import type { AppMode, ChatMessage, AiModel, McpWebCapabilities, McpWebConnectResult, McpBDetectResult, WebAgentSpec } from './types';
 import type { ToolCallData } from './components/McpToolCallBlock';
 import './styles/app.css';
 
@@ -33,6 +34,10 @@ const App: React.FC = () => {
 
   // Window maximize state
   const [isMaximized, setIsMaximized] = useState(false);
+
+  // Per-site agent generation/approval
+  const [agentProposal, setAgentProposal] = useState<{ spec: WebAgentSpec; usesCode: boolean } | null>(null);
+  const [creatingAgent, setCreatingAgent] = useState(false);
 
   useEffect(() => {
     window.surge?.ai?.getModels?.().then(setModels).catch(() => {});
@@ -291,6 +296,30 @@ const App: React.FC = () => {
     }
   }, [browserUrl]);
 
+  // Generate a per-site agent from the current page (proposal only — user must approve).
+  const handleCreateAgent = useCallback(async () => {
+    if (creatingAgent) return;
+    setCreatingAgent(true);
+    try {
+      const res = await window.surge.agents.generate(selectedModel);
+      if (res.success && res.spec && res.spec.tools.length > 0) {
+        setAgentProposal({ spec: res.spec, usesCode: !!res.usesCode });
+      } else {
+        alert(res.error || 'Could not generate an agent for this page.');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Agent generation failed');
+    } finally {
+      setCreatingAgent(false);
+    }
+  }, [creatingAgent, selectedModel]);
+
+  const handleApproveAgent = useCallback(async (spec: WebAgentSpec) => {
+    const res = await window.surge.agents.save(spec);
+    setAgentProposal(null);
+    if (!res.success) alert(res.error || 'Failed to save agent');
+  }, []);
+
   return (
     <div className={`app ${mode}`}>
       {/* Title bar */}
@@ -357,6 +386,8 @@ const App: React.FC = () => {
                 .catch(() => {});
             }
           }}
+          onCreateAgent={handleCreateAgent}
+          creatingAgent={creatingAgent}
         />
       )}
 
@@ -433,6 +464,15 @@ const App: React.FC = () => {
 
             {showServers && (
               <ServerPanel onClose={() => setShowServers(false)} />
+            )}
+
+            {agentProposal && (
+              <AgentApprovalModal
+                spec={agentProposal.spec}
+                usesCode={agentProposal.usesCode}
+                onApprove={handleApproveAgent}
+                onCancel={() => setAgentProposal(null)}
+              />
             )}
           </>
         )}

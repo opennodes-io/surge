@@ -66,13 +66,23 @@ export interface Profile extends SyncMeta {
 
 export type AgentKind = 'saved-toolset' | 'web-mcp' | 'codegen';
 
-/** Spec for a saved agent — the seam the later code-gen phase targets. */
+/**
+ * Persisted spec for a saved agent. Two shapes share this structure:
+ *  - ephemeral/mcp-b: tools with inputSchema (no recipe) — from the Web->MCP adapter.
+ *  - web-mcp/codegen: tools with declarative `steps` recipes (the safe generated path),
+ *    optionally an opt-in `code` handler (only run when codeApproved === true).
+ * Kept loose (`tools?: any[]`) so storage stays decoupled from the strict webmcp types.
+ */
 export interface AgentSpec {
-  source: 'ephemeral-browser' | 'mcp-b' | 'codegen';
+  version?: number;
+  source: 'ephemeral-browser' | 'mcp-b' | 'codegen' | 'web-mcp';
   domain?: string;
-  tools?: Array<{ name: string; description?: string; inputSchema?: unknown }>;
-  /** generated server entrypoint / instructions, filled by a future code-gen step */
+  name?: string;
+  description?: string;
+  tools?: any[];
+  /** opt-in arbitrary-code handler (executed only in the gated sandbox when approved) */
   code?: string;
+  codeApproved?: boolean;
   [key: string]: unknown;
 }
 

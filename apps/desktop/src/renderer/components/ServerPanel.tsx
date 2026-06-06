@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { IconBolt, IconSearch, IconX, IconPlug, IconChevronDown, IconChevronUp } from './Icons';
-import type { ConnectedServer, McpServerConfig, IndexServer, IndexCategory, DiscoveryQuery } from '../types';
+import type { ConnectedServer, McpServerConfig, IndexServer, IndexCategory, DiscoveryQuery, SavedAgent } from '../types';
 import './ServerPanel.css';
 
 interface ServerPanelProps {
@@ -37,10 +37,25 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
   const [connectCommand, setConnectCommand] = useState('');
   const [showManual, setShowManual] = useState(false);
   const [similar, setSimilar] = useState<Record<string, IndexServer[]>>({});
+  const [agents, setAgents] = useState<SavedAgent[]>([]);
 
   const refreshServers = useCallback(async () => {
     setServers(await window.surge.mcp.getServers());
   }, []);
+
+  const refreshAgents = useCallback(async () => {
+    try {
+      setAgents(await window.surge.agents.list());
+    } catch {
+      setAgents([]);
+    }
+  }, []);
+
+  const removeAgent = async (a: SavedAgent) => {
+    await window.surge.agents.remove(a.id, a.spec?.domain);
+    refreshAgents();
+    refreshServers();
+  };
 
   const runDiscovery = useCallback(async () => {
     setIsSearching(true);
@@ -62,10 +77,11 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
 
   useEffect(() => {
     refreshServers();
+    refreshAgents();
     const unsub = window.surge.mcp.onServerEvent(() => refreshServers());
     window.surge.discovery.categories().then(setCategories).catch(() => {});
     return unsub;
-  }, [refreshServers]);
+  }, [refreshServers, refreshAgents]);
 
   // Re-run discovery when filters change.
   useEffect(() => {
@@ -196,7 +212,7 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
                 <div className="sp-server-header">
                   <span className={`sp-status-dot ${s.status}`}></span>
                   <span className="sp-server-name">{s.name}</span>
-                  {s.virtual && <span className="badge badge-purple" style={{ fontSize: '0.6rem' }}>{s.source === 'in-process' ? 'local' : 'page'}</span>}
+                  {s.virtual && <span className="badge badge-purple" style={{ fontSize: '0.6rem' }}>{s.source === 'in-process' ? 'local' : s.source === 'codegen' ? 'agent' : 'page'}</span>}
                   {s.config.isMcpWeb && <span className="badge badge-cyan" style={{ fontSize: '0.6rem' }}>MCPWeb</span>}
                   {!s.virtual && (
                     <button className="btn-ghost btn-sm" onClick={() => handleDisconnect(s.id)}>Disconnect</button>
@@ -212,6 +228,27 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
             ))
           )}
         </div>
+
+        {agents.length > 0 && (
+          <div className="sp-section">
+            <div className="sp-section-title">Site Agents ({agents.length})</div>
+            {agents.map((a) => (
+              <div key={a.id} className="sp-server-card">
+                <div className="sp-server-header">
+                  <span className="sp-server-name">{a.name}</span>
+                  {a.kind === 'codegen' && <span className="badge badge-red" style={{ fontSize: '0.55rem' }}>code</span>}
+                  <span className="badge badge-purple" style={{ fontSize: '0.55rem' }}>{a.spec?.domain}</span>
+                  <button className="btn-ghost btn-sm" onClick={() => removeAgent(a)}>Remove</button>
+                </div>
+                <div className="sp-tools-list">
+                  {(a.spec?.tools || []).slice(0, 6).map((t) => (
+                    <span key={t.name} className="badge badge-cyan">{t.name}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="sp-section">
           <div className="sp-section-title">Discover Servers (MCP Rating)</div>

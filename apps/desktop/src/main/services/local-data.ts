@@ -1,8 +1,8 @@
-import { app, ipcMain } from 'electron';
-import path from 'node:path';
-import { SurgeStore, DiscoveryClient, createBookmarksVirtualServer } from '@surge/core';
+import { ipcMain } from 'electron';
+import { DiscoveryClient, createBookmarksVirtualServer } from '@surge/core';
 import type { McpManager } from '@surge/core';
 import { SettingsService } from './settings-service';
+import { getStore } from './store';
 
 /**
  * Local-first data: opens the shared SQLite store (same file the standalone
@@ -10,8 +10,7 @@ import { SettingsService } from './settings-service';
  * virtual MCP server, and wires bookmarks/history/discovery IPC handlers.
  */
 export function registerLocalDataHandlers(mcpManager: McpManager, settings: SettingsService): void {
-  const dbPath = path.join(app.getPath('userData'), 'surge.db');
-  const storePromise = SurgeStore.open({ path: dbPath, deviceId: 'surge-desktop' });
+  const storePromise = getStore();
 
   storePromise
     .then((store) => mcpManager.registerVirtualServer(createBookmarksVirtualServer(store)))

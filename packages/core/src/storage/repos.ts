@@ -442,6 +442,20 @@ export class ProfilesRepo extends BaseRepo {
     const rs = await this.client.execute(`SELECT * FROM profiles WHERE is_active=1 AND deleted_at IS NULL LIMIT 1`);
     return rs.rows.length ? mapProfile(rs.rows[0]) : null;
   }
+
+  /** Return the active profile, creating/activating a "Default" one if none exists. */
+  async ensureDefault(): Promise<Profile> {
+    const active = await this.getActive();
+    if (active) return active;
+    const all = await this.list();
+    if (all.length) {
+      await this.setActive(all[0].id);
+      return (await this.get(all[0].id))!;
+    }
+    const created = await this.create('Default');
+    await this.setActive(created.id);
+    return (await this.get(created.id))!;
+  }
 }
 
 // ── Agents ──────────────────────────────────────────────
