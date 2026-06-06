@@ -1,7 +1,7 @@
-import { GoogleGenerativeAI, type GenerativeModel, type FunctionDeclaration, SchemaType } from '@google/generative-ai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
-import { SettingsService } from './settings-service';
-import type { ToolDefinition } from './mcp-manager';
+import type { SettingsPort } from '../ports/index.js';
+import type { ToolDefinition } from '../mcp/mcp-manager.js';
 
 export type ModelLevel = 'quick' | 'smart' | 'best';
 
@@ -58,7 +58,7 @@ const ALL_MODELS: AiModel[] = [
 ];
 
 export class AiService {
-  private settings: SettingsService;
+  private settings: SettingsPort;
   private geminiClient: GoogleGenerativeAI | null = null;
   private groqClient: OpenAI | null = null;
   private ollamaClient: OpenAI | null = null;
@@ -66,7 +66,7 @@ export class AiService {
   private mistralClient: OpenAI | null = null;
   private vllmClient: OpenAI | null = null;
 
-  constructor(settings: SettingsService) {
+  constructor(settings: SettingsPort) {
     this.settings = settings;
     this.initClients();
   }
@@ -491,7 +491,7 @@ export class AiService {
 
     const chat = model.startChat({
       history,
-      ...(systemMessage ? { systemInstruction: { parts: [{ text: systemMessage.content }] } } : {}),
+      ...(systemMessage ? { systemInstruction: systemMessage.content } : {}),
     });
 
     const result = await chat.sendMessageStream(lastParts as any);

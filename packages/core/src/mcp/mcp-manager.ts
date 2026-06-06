@@ -2,8 +2,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { SettingsService } from './settings-service';
-import type { McpWebCapabilities } from './mcpweb-detector';
+import type { SettingsPort } from '../ports/index.js';
+import type { McpWebCapabilities } from './mcpweb-detector.js';
+import type { AgentSpec } from '../storage/types.js';
 
 export interface McpServerConfig {
   id: string;
@@ -22,6 +23,26 @@ export interface ConnectedServer {
   status: 'connected' | 'disconnected' | 'error';
   tools: McpTool[];
   config: McpServerConfig;
+  /** true for in-memory virtual servers (page tools, in-process repos) — not real transports */
+  virtual?: boolean;
+  source?: VirtualServerSource;
+}
+
+export type VirtualServerSource = 'ephemeral-browser' | 'mcp-b' | 'codegen' | 'in-process';
+
+/**
+ * A virtual server exposes tools that aren't backed by a real MCP transport — e.g. the
+ * Web->MCP adapter (page tools), MCP-B page tools, or in-process repos (bookmarks/history).
+ * They are routed, namespaced and surfaced exactly like real servers. `persist()` is the
+ * seam the future code-gen / saved-agent phase targets.
+ */
+export interface VirtualServer {
+  id: string;
+  name: string;
+  tools: McpTool[];
+  source?: VirtualServerSource;
+  callTool: (toolName: string, args: any) => Promise<any>;
+  persist?: () => AgentSpec;
 }
 
 export interface McpTool {
@@ -43,10 +64,37 @@ export interface ToolDefinition {
 
 export class McpManager {
   private connections: Map<string, { client: Client; transport: any; server: ConnectedServer }> = new Map();
-  private settings: SettingsService;
+  private virtualServers: Map<string, VirtualServer> = new Map();
+  private settings: SettingsPort;
 
-  constructor(settings: SettingsService) {
+  constructor(settings: SettingsPort) {
     this.settings = settings;
+  }
+
+  // ── Virtual Servers (Web->MCP adapter, in-process repos) ─
+  registerVirtualServer(vs: VirtualServer): ConnectedServer {
+    this.virtualServers.set(vs.id, vs);
+    return this.virtualToConnected(vs);
+  }
+
+  unregisterVirtualServer(id: string): void {
+    this.virtualServers.delete(id);
+  }
+
+  hasVirtualServer(id: string): boolean {
+    return this.virtualServers.has(id);
+  }
+
+  private virtualToConnected(vs: VirtualServer): ConnectedServer {
+    return {
+      id: vs.id,
+      name: vs.name,
+      status: 'connected',
+      tools: vs.tools,
+      virtual: true,
+      source: vs.source,
+      config: { id: vs.id, name: vs.name, transport: 'stdio', isMcpWeb: vs.source === 'ephemeral-browser' || vs.source === 'mcp-b' },
+    };
   }
 
   // ── MCPWeb Auto-Connect ─────────────────────────────────
@@ -219,6 +267,35 @@ export class McpManager {
   }
 
   async callTool(serverId: string, toolName: string, args: any): Promise<any> {
+    // Virtual servers (page tools / in-process repos) are routed through their callTool.
+    const vs = this.virtualServers.get(serverId);
+    if (vs) {
+      const startTime = Date.now();
+      try {
+        const result = await vs.callTool(toolName, args || {});
+        const content = Array.isArray(result?.content)
+          ? result.content
+          : [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }];
+        return {
+          toolCallId: `${serverId}:${toolName}:${Date.now()}`,
+          name: toolName,
+          serverId,
+          content,
+          isError: result?.isError || false,
+          durationMs: Date.now() - startTime,
+        };
+      } catch (err: any) {
+        return {
+          toolCallId: `${serverId}:${toolName}:${Date.now()}`,
+          name: toolName,
+          serverId,
+          content: [{ type: 'text', text: err.message }],
+          isError: true,
+          durationMs: Date.now() - startTime,
+        };
+      }
+    }
+
     const conn = this.connections.get(serverId);
     if (!conn) throw new Error(`Server not connected: ${serverId}`);
 
@@ -249,20 +326,30 @@ export class McpManager {
     }
   }
 
+  // Read an MCP resource (e.g. a ui:// template for MCP Apps / MCP-UI rendering).
+  async readResource(serverId: string, uri: string): Promise<any> {
+    const conn = this.connections.get(serverId);
+    if (!conn) throw new Error(`Server not connected: ${serverId}`);
+    return conn.client.readResource({ uri });
+  }
+
   getConnectedServers(): ConnectedServer[] {
-    return Array.from(this.connections.values()).map(c => c.server);
+    const real = Array.from(this.connections.values()).map(c => c.server);
+    const virtual = Array.from(this.virtualServers.values()).map(vs => this.virtualToConnected(vs));
+    return [...real, ...virtual];
   }
 
   getTools(serverId?: string): McpTool[] {
     if (serverId) {
       const conn = this.connections.get(serverId);
-      return conn ? conn.server.tools : [];
+      if (conn) return conn.server.tools;
+      const vs = this.virtualServers.get(serverId);
+      return vs ? vs.tools : [];
     }
-    // All tools from all servers
+    // All tools from all servers (real + virtual)
     const tools: McpTool[] = [];
-    for (const conn of this.connections.values()) {
-      tools.push(...conn.server.tools);
-    }
+    for (const conn of this.connections.values()) tools.push(...conn.server.tools);
+    for (const vs of this.virtualServers.values()) tools.push(...vs.tools);
     return tools;
   }
 
@@ -270,15 +357,15 @@ export class McpManager {
   // Returns OpenAI-compatible tool definitions for function calling
   getToolDefinitions(): ToolDefinition[] {
     const tools: ToolDefinition[] = [];
-    for (const conn of this.connections.values()) {
-      if (conn.server.status !== 'connected') continue;
-      for (const tool of conn.server.tools) {
+    for (const server of this.getConnectedServers()) {
+      if (server.status !== 'connected') continue;
+      for (const tool of server.tools) {
         tools.push({
           type: 'function',
           function: {
             // Namespace: serverId__toolName to avoid collisions
-            name: `${conn.server.id}__${tool.name}`,
-            description: `[${conn.server.name}] ${tool.description}`,
+            name: `${server.id}__${tool.name}`,
+            description: `[${server.name}] ${tool.description}`,
             parameters: tool.inputSchema || { type: 'object', properties: {} },
           },
         });
@@ -325,11 +412,11 @@ export class McpManager {
   parseToolName(namespacedName: string): { serverId: string; toolName: string } | null {
     const sep = namespacedName.indexOf('__');
     if (sep === -1) {
-      // Try to find by tool name alone (first match)
-      for (const conn of this.connections.values()) {
-        const tool = conn.server.tools.find(t => t.name === namespacedName);
+      // Try to find by tool name alone (first match) across real + virtual servers
+      for (const server of this.getConnectedServers()) {
+        const tool = server.tools.find(t => t.name === namespacedName);
         if (tool) {
-          return { serverId: conn.server.id, toolName: namespacedName };
+          return { serverId: server.id, toolName: namespacedName };
         }
       }
       return null;

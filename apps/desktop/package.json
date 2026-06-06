@@ -12,6 +12,10 @@
   },
   "dependencies": {
     "@surge/core": "workspace:*",
+    "@google/generative-ai": "^0.24.0",
+    "@libsql/client": "^0.14.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "openai": "^4.80.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",

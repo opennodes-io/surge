@@ -10,9 +10,21 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@google/generative-ai':
+        specifier: ^0.24.0
+        version: 0.24.1
+      '@libsql/client':
+        specifier: ^0.14.0
+        version: 0.14.0
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.12.0
+        version: 1.29.0(zod@3.25.76)
       '@surge/core':
         specifier: workspace:*
         version: link:../../packages/core
+      openai:
+        specifier: ^4.80.0
+        version: 4.104.0(ws@8.21.0)(zod@3.25.76)
       react:
         specifier: ^19.0.0
         version: 19.2.7

@@ -4,7 +4,9 @@ import path from 'path';
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // @surge/core is a source-only workspace package: bundle it, but keep its
+    // runtime deps (libsql native, MCP SDK, openai, gemini) external.
+    plugins: [externalizeDepsPlugin({ exclude: ['@surge/core'] })],
     build: {
       outDir: 'dist/main',
       rollupOptions: {

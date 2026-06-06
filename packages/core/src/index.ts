@@ -4,3 +4,7 @@
 
 export * from './ports/index.js';
 export * from './storage/index.js';
+export * from './ai/index.js';
+export * from './mcp/index.js';
+export * from './orchestrator/index.js';
+export * from './webmcp/index.js';

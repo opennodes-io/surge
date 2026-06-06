@@ -1,4 +1,4 @@
-import { McpManager } from './mcp-manager';
+import { McpManager } from './mcp-manager.js';
 
 export interface SearchResult {
   title: string;
