@@ -1,0 +1,84 @@
+/* ── WebBrowserBar ──────────────────────────────────────── */
+
+.web-browser-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.wbb-controls {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.wbb-url-form {
+  flex: 1;
+}
+
+.wbb-url-wrapper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 4px var(--space-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  transition: all var(--transition-fast);
+}
+
+.wbb-url-wrapper:focus-within {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 8px var(--accent-cyan-glow);
+}
+
+.wbb-mcp-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: var(--radius-full);
+  color: var(--accent-green);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: var(--font-sans);
+}
+
+.wbb-mcp-indicator:hover {
+  background: rgba(16, 185, 129, 0.2);
+}
+
+.wbb-mcp-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--accent-green);
+  border-radius: 50%;
+  box-shadow: 0 0 6px var(--accent-green-glow);
+}
+
+.wbb-url-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  outline: none;
+  padding: 2px;
+}
+
+.wbb-url-input::placeholder {
+  color: var(--text-muted);
+}
+
+.wbb-actions {
+  flex-shrink: 0;
+}

@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+out/
+build/
+*.tsbuildinfo
+
+# Electron native rebuilds
+**/*.node
+
+# Local data / SQLite
+*.db
+*.db-wal
+*.db-shm
+surge.db*
+
+# Env & secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Capacitor native projects (scaffold only this milestone)
+apps/mobile/android/
+apps/mobile/ios/

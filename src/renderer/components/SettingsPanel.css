@@ -1,0 +1,270 @@
+/* ── SettingsPanel ──────────────────────────────────────── */
+
+.settings-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.settings-header h2 {
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+
+/* Tabs */
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: var(--space-sm) var(--space-lg);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+}
+
+.settings-tab {
+  padding: var(--space-sm) var(--space-md);
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.settings-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-glass-hover);
+}
+
+.settings-tab.active {
+  color: var(--accent-cyan);
+  background: rgba(6, 182, 212, 0.1);
+  font-weight: 600;
+}
+
+/* Content */
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-lg);
+}
+
+.settings-section h3 {
+  font-size: var(--text-base);
+  font-weight: 700;
+  margin-bottom: var(--space-md);
+}
+
+.settings-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: 4px;
+  display: block;
+}
+
+.key-link {
+  color: var(--accent-cyan);
+  text-decoration: none;
+  font-size: var(--text-xs);
+}
+
+.key-link:hover {
+  text-decoration: underline;
+}
+
+/* API key groups */
+.api-key-group {
+  margin-bottom: var(--space-md);
+}
+
+.api-key-group label {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+}
+
+.api-key-group .input {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+/* ── Model Level Sections (Quick/Smart/Best) ──────────── */
+
+.model-level-section {
+  margin-bottom: var(--space-lg);
+  padding: var(--space-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-glass);
+}
+
+.model-level-section.level-quick { border-left: 3px solid var(--accent-green); }
+.model-level-section.level-smart { border-left: 3px solid var(--accent-purple); }
+.model-level-section.level-best  { border-left: 3px solid var(--accent-pink); }
+
+.model-level-section-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.model-level-section-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.model-level-section-name {
+  font-size: var(--text-base);
+  font-weight: 700;
+}
+
+.level-quick .model-level-section-name { color: var(--accent-green); }
+.level-smart .model-level-section-name { color: var(--accent-purple); }
+.level-best .model-level-section-name  { color: var(--accent-pink); }
+
+.model-level-section-desc {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Model grid */
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--space-sm);
+}
+
+.model-card {
+  padding: var(--space-md);
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: center;
+  transition: all var(--transition-fast);
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+}
+
+.model-card:hover {
+  border-color: var(--border-active);
+  background: var(--bg-glass-hover);
+}
+
+.model-card.active {
+  border-color: var(--accent-cyan);
+  background: rgba(6, 182, 212, 0.08);
+  box-shadow: 0 0 12px rgba(6, 182, 212, 0.15);
+}
+
+.model-card.locked {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-card-icon {
+  font-size: 24px;
+  margin-bottom: var(--space-xs);
+}
+
+.model-card-name {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.model-card-desc {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.model-card-cost {
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  margin-top: 4px;
+  padding: 1px 6px;
+  background: rgba(100, 116, 139, 0.12);
+  border-radius: 3px;
+  display: inline-block;
+}
+
+/* Tier / Subscription */
+.tier-current {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  background: var(--gradient-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-lg);
+}
+
+.tier-badge {
+  font-size: 32px;
+}
+
+.tier-name {
+  font-size: var(--text-lg);
+  font-weight: 800;
+}
+
+.tier-desc {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+/* Upgrade comparison */
+.upgrade-comparison {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-md);
+}
+
+.upgrade-col {
+  padding: var(--space-md);
+  background: var(--bg-glass);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.upgrade-col.pro {
+  border-color: var(--accent-purple);
+  background: rgba(139, 92, 246, 0.05);
+}
+
+.upgrade-col h4 {
+  font-size: var(--text-base);
+  font-weight: 700;
+  margin-bottom: var(--space-sm);
+}
+
+.upgrade-col.pro h4 {
+  color: var(--accent-purple);
+}
+
+.upgrade-col ul {
+  list-style: none;
+  padding: 0;
+}
+
+.upgrade-col li {
+  font-size: var(--text-sm);
+  padding: 4px 0;
+  color: var(--text-secondary);
+}
