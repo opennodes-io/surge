@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld('surge', {
     getTools: (serverId?: string) => ipcRenderer.invoke('mcp:getTools', serverId),
     callTool: (serverId: string, toolName: string, args: any) =>
       ipcRenderer.invoke('mcp:callTool', serverId, toolName, args),
+    readResource: (serverId: string, uri: string) =>
+      ipcRenderer.invoke('mcp:readResource', serverId, uri),
     discover: (query: string) => ipcRenderer.invoke('mcp:discover', query),
     onServerEvent: (callback: (event: any) => void) => {
       const handler = (_event: any, data: any) => callback(data);
@@ -68,6 +70,33 @@ contextBridge.exposeInMainWorld('surge', {
     disconnect: (serverId: string) => ipcRenderer.invoke('mcpweb:disconnect', serverId),
   },
 
+  // Discovery (MCP_Index registry, with quality ratings)
+  discovery: {
+    list: (params: any) => ipcRenderer.invoke('discovery:list', params),
+    get: (slug: string) => ipcRenderer.invoke('discovery:get', slug),
+    similar: (slug: string) => ipcRenderer.invoke('discovery:similar', slug),
+    categories: () => ipcRenderer.invoke('discovery:categories'),
+    stats: () => ipcRenderer.invoke('discovery:stats'),
+  },
+
+  // Bookmarks (local-first; mirrors the standalone bookmarks MCP server)
+  bookmarks: {
+    add: (input: any) => ipcRenderer.invoke('bookmarks:add', input),
+    remove: (id: string) => ipcRenderer.invoke('bookmarks:remove', id),
+    list: (opts?: any) => ipcRenderer.invoke('bookmarks:list', opts),
+    search: (query: string) => ipcRenderer.invoke('bookmarks:search', query),
+    tag: (id: string, tag: string) => ipcRenderer.invoke('bookmarks:tag', id, tag),
+    untag: (id: string, tag: string) => ipcRenderer.invoke('bookmarks:untag', id, tag),
+  },
+
+  // History (local-first)
+  history: {
+    record: (input: any) => ipcRenderer.invoke('history:record', input),
+    search: (query: string) => ipcRenderer.invoke('history:search', query),
+    list: (opts?: any) => ipcRenderer.invoke('history:list', opts),
+    clear: (opts?: any) => ipcRenderer.invoke('history:clear', opts),
+  },
+
   // Web search
   search: {
     web: (query: string) => ipcRenderer.invoke('search:web', query),
@@ -78,6 +107,8 @@ contextBridge.exposeInMainWorld('surge', {
     navigate: (url: string) => ipcRenderer.send('browser:navigate', url),
     show: () => ipcRenderer.send('browser:show'),
     hide: () => ipcRenderer.send('browser:hide'),
+    back: () => ipcRenderer.send('browser:back'),
+    forward: () => ipcRenderer.send('browser:forward'),
     openExternal: (url: string) => ipcRenderer.send('browser:openExternal', url),
     onNavigate: (callback: (url: string) => void) => {
       const handler = (_event: any, url: string) => callback(url);

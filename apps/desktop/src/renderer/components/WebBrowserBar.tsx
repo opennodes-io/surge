@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { IconArrowLeft, IconArrowRight, IconRefresh, IconPlug } from './Icons';
+import { IconArrowLeft, IconArrowRight, IconRefresh, IconPlug, IconStar } from './Icons';
 import type { McpWebCapabilities } from '../types';
 import './WebBrowserBar.css';
 
@@ -14,6 +14,7 @@ interface WebBrowserBarProps {
   onShowMcpWeb?: () => void;
   onOpenInBrowser?: () => void;
   onOpenExternal?: () => void;
+  onBookmark?: () => void;
 }
 
 const WebBrowserBar: React.FC<WebBrowserBarProps> = ({
@@ -27,6 +28,7 @@ const WebBrowserBar: React.FC<WebBrowserBarProps> = ({
   onShowMcpWeb,
   onOpenInBrowser,
   onOpenExternal,
+  onBookmark,
 }) => {
   const [url, setUrl] = useState(currentUrl);
   const [isDetecting, setIsDetecting] = useState(false);
@@ -109,6 +111,11 @@ const WebBrowserBar: React.FC<WebBrowserBarProps> = ({
         >
           <IconPlug size={15} />
         </button>
+        {onBookmark && currentUrl && (
+          <button className="btn-icon" onClick={onBookmark} title="Bookmark this page">
+            <IconStar size={15} />
+          </button>
+        )}
         {onOpenExternal && currentUrl && (
           <button
             className="btn-icon"

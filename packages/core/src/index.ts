@@ -8,3 +8,5 @@ export * from './ai/index.js';
 export * from './mcp/index.js';
 export * from './orchestrator/index.js';
 export * from './webmcp/index.js';
+export * from './ui/index.js';
+export * from './discovery/index.js';

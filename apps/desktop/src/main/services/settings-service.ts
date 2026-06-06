@@ -50,7 +50,7 @@ const DEFAULTS: Partial<Settings> = {
   'mcp.maxConnections': 3,
   'mcp.autoReconnect': true,
   'mcp.savedServers': [],
-  'mcp.indexUrl': '', // Set to MCP_Index API URL (e.g. http://localhost:3000)
+  'mcp.indexUrl': 'http://localhost:3000', // MCP_Index registry; falls back to registry.mcp.so
   'search.dailyCount': 0,
   'search.lastReset': new Date().toISOString().slice(0, 10),
   'search.dailyLimit': 50,

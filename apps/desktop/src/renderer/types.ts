@@ -25,6 +25,7 @@ declare global {
         getServers: () => Promise<ConnectedServer[]>;
         getTools: (serverId?: string) => Promise<McpTool[]>;
         callTool: (serverId: string, toolName: string, args: any) => Promise<any>;
+        readResource: (serverId: string, uri: string) => Promise<any>;
         discover: (query: string) => Promise<any[]>;
         onServerEvent: (callback: (event: any) => void) => () => void;
         onToolCall: (callback: (data: any) => void) => () => void;
@@ -34,6 +35,27 @@ declare global {
         connect: (url: string) => Promise<McpWebConnectResult>;
         disconnect: (serverId: string) => Promise<void>;
       };
+      discovery: {
+        list: (params?: DiscoveryQuery) => Promise<{ servers: IndexServer[]; total: number }>;
+        get: (slug: string) => Promise<IndexServer | null>;
+        similar: (slug: string) => Promise<IndexServer[]>;
+        categories: () => Promise<IndexCategory[]>;
+        stats: () => Promise<any>;
+      };
+      bookmarks: {
+        add: (input: Partial<Bookmark> & { url: string }) => Promise<Bookmark>;
+        remove: (id: string) => Promise<{ removed: boolean }>;
+        list: (opts?: { collectionId?: string; kind?: string; limit?: number }) => Promise<Bookmark[]>;
+        search: (query: string) => Promise<Bookmark[]>;
+        tag: (id: string, tag: string) => Promise<any>;
+        untag: (id: string, tag: string) => Promise<any>;
+      };
+      history: {
+        record: (input: Partial<HistoryEntry>) => Promise<HistoryEntry>;
+        search: (query: string) => Promise<HistoryEntry[]>;
+        list: (opts?: { kind?: string; limit?: number }) => Promise<HistoryEntry[]>;
+        clear: (opts?: { kind?: string; olderThanDays?: number }) => Promise<{ cleared: number }>;
+      };
       search: {
         web: (query: string) => Promise<{ results: SearchResult[]; error?: string }>;
       };
@@ -41,6 +63,8 @@ declare global {
         navigate: (url: string) => void;
         show: () => void;
         hide: () => void;
+        back: () => void;
+        forward: () => void;
         openExternal: (url: string) => void;
         onNavigate: (callback: (url: string) => void) => () => void;
         detectMcpB: () => Promise<McpBDetectResult>;
@@ -104,6 +128,75 @@ export interface ConnectedServer {
   status: 'connected' | 'disconnected' | 'error';
   tools: McpTool[];
   config: McpServerConfig;
+  virtual?: boolean;
+  source?: string;
+}
+
+// ── Discovery (MCP_Index) ──────────────────────────────
+export interface DiscoveryQuery {
+  search?: string;
+  category?: string;
+  sortBy?: 'quality' | 'stars' | 'downloads' | 'recent' | 'name';
+  limit?: number;
+  offset?: number;
+  hasUi?: boolean;
+  minScore?: number;
+  requiresAuth?: boolean;
+  isOfficial?: boolean;
+}
+
+export interface IndexServer {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  category?: string;
+  qualityScore?: number | null;
+  uiType?: 'mcp-apps' | 'mcp-ui' | null;
+  supportsUi?: boolean;
+  supportsDiscovery?: boolean;
+  discoveryUrl?: string | null;
+  requiresAuth?: boolean;
+  isOfficial?: boolean;
+  isVerified?: boolean;
+  stars?: number;
+  weeklyDownloads?: number;
+  npmPackage?: string | null;
+  installCommand?: string | null;
+  trustTier?: 'verified' | 'trusted' | 'community' | 'unverified';
+  source?: string;
+}
+
+export interface IndexCategory {
+  id?: string;
+  name: string;
+  slug: string;
+  serverCount?: number;
+}
+
+// ── Local bookmarks / history (renderer view) ──────────
+export interface Bookmark {
+  id: string;
+  url: string;
+  title: string | null;
+  description?: string | null;
+  favicon?: string | null;
+  kind: 'web' | 'mcp-server' | 'mcpweb' | 'chat';
+  targetRef?: string | null;
+  collectionId?: string | null;
+  tags?: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface HistoryEntry {
+  id: string;
+  url: string | null;
+  title: string | null;
+  kind: 'web' | 'mcp-server-connect' | 'mcpweb-visit' | 'chat' | 'tool-call';
+  targetRef?: string | null;
+  visitedAt: number;
+  meta?: Record<string, unknown> | null;
 }
 
 export interface McpTool {

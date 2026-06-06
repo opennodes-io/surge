@@ -1,5 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { IconCircle, IconCheck, IconX } from './Icons';
+import McpAppRenderer, { type HostAction } from './McpAppRenderer';
+import { detectUiResource, type UiPayload } from '@surge/core/ui';
 import './McpToolCallBlock.css';
 
 interface ToolCallData {
@@ -211,6 +213,55 @@ const RichImage: React.FC<{ src: string; alt: string }> = ({ src, alt }) => {
 const McpToolCallBlock: React.FC<McpToolCallBlockProps> = ({ data }) => {
   const [expanded, setExpanded] = useState(false);
 
+  // ── MCP Apps / MCP-UI detection ──
+  const uiPayload: UiPayload | null = useMemo(
+    () => (data.status === 'success' ? detectUiResource(data.result, data.serverId) : null),
+    [data.result, data.status, data.serverId],
+  );
+
+  // Apps-SDK templates carry a ui:// uri but no inline HTML — fetch it via readResource.
+  const [resourceHtml, setResourceHtml] = useState<string | null>(null);
+  useEffect(() => {
+    setResourceHtml(null);
+    if (uiPayload && uiPayload.kind === 'html' && !uiPayload.html && uiPayload.resourceUri && data.serverId) {
+      let cancelled = false;
+      window.surge.mcp
+        .readResource(data.serverId, uiPayload.resourceUri)
+        .then((res: any) => {
+          const text = res?.contents?.[0]?.text;
+          if (!cancelled && typeof text === 'string') setResourceHtml(text);
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+      };
+    }
+  }, [uiPayload, data.serverId]);
+
+  const handleHostAction = (action: HostAction) => {
+    switch (action.type) {
+      case 'tool':
+        if (action.payload.toolName) {
+          window.surge.mcp
+            .callTool(action.payload.serverId || data.serverId, action.payload.toolName, action.payload.params || {})
+            .catch(() => {});
+        }
+        break;
+      case 'prompt':
+        if (action.payload.text) window.dispatchEvent(new CustomEvent('surge:prompt', { detail: action.payload.text }));
+        break;
+      case 'link':
+        if (action.payload.url) window.surge.browser.openExternal(action.payload.url);
+        break;
+      case 'notify':
+        console.info('[MCP App]', action.payload.message);
+        break;
+    }
+  };
+
+  const uiHtml = uiPayload?.html ?? resourceHtml ?? undefined;
+  const hasUiApp = !!uiPayload && (uiPayload.kind === 'url' || !!uiHtml);
+
   // Parse result into rich content
   const richContent = useMemo(() => {
     if (!data.result || data.status === 'error') return null;
@@ -303,8 +354,22 @@ const McpToolCallBlock: React.FC<McpToolCallBlockProps> = ({ data }) => {
         </div>
       </div>
 
+      {/* MCP App / MCP-UI interactive surface */}
+      {hasUiApp && data.status === 'success' && (
+        <div className="tcb-rich-preview">
+          <McpAppRenderer
+            htmlContent={uiHtml}
+            url={uiPayload!.kind === 'url' ? uiPayload!.url : undefined}
+            toolName={data.toolName}
+            serverName={data.serverName}
+            serverId={data.serverId}
+            onHostAction={handleHostAction}
+          />
+        </div>
+      )}
+
       {/* Rich content preview — shown even when collapsed */}
-      {hasRichContent && data.status === 'success' && (
+      {!hasUiApp && hasRichContent && data.status === 'success' && (
         <div className="tcb-rich-preview">
           {/* Images */}
           {richContent!.images.map((img, i) => (

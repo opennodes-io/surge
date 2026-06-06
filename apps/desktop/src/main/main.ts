@@ -51,6 +51,11 @@ function createMainWindow(): void {
     },
   });
 
+  // Surface embedded-browser navigation to the renderer (drives URL bar + history).
+  const emitNavigate = (url: string) => appView?.webContents.send('browser:didNavigate', url);
+  browserView.webContents.on('did-navigate', (_e: any, url: string) => emitNavigate(url));
+  browserView.webContents.on('did-navigate-in-page', (_e: any, url: string) => emitNavigate(url));
+
   // Load renderer
   if (process.env.ELECTRON_RENDERER_URL) {
     appView.webContents.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -140,6 +145,20 @@ ipcMain.on('browser:hide', () => {
   mainWindow.contentView.removeChildView(browserView);
   const bounds = mainWindow.getBounds();
   appView.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
+});
+
+ipcMain.on('browser:back', () => {
+  const wc: any = browserView?.webContents;
+  if (!wc) return;
+  if (wc.navigationHistory?.canGoBack?.()) wc.navigationHistory.goBack();
+  else if (wc.canGoBack?.()) wc.goBack();
+});
+
+ipcMain.on('browser:forward', () => {
+  const wc: any = browserView?.webContents;
+  if (!wc) return;
+  if (wc.navigationHistory?.canGoForward?.()) wc.navigationHistory.goForward();
+  else if (wc.canGoForward?.()) wc.goForward();
 });
 
 // Window drag support

@@ -72,6 +72,15 @@ const App: React.FC = () => {
     }
   }, [mode]);
 
+  // Browser-like history: record embedded-browser navigations.
+  useEffect(() => {
+    const unsub = window.surge?.browser?.onNavigate?.((url: string) => {
+      setBrowserUrl(url);
+      window.surge?.history?.record({ kind: 'web', url, title: url }).catch(() => {});
+    });
+    return unsub;
+  }, []);
+
   // ── MCPWeb-First Navigation ──────────────────────────────
   // Three-layer detection:
   //   1. Try .well-known/mcp (server-side MCPWeb) → auto-connect via MCP SDK
@@ -104,6 +113,9 @@ const App: React.FC = () => {
 
         setShowBrowser(false);
         window.surge?.browser?.hide();
+        window.surge?.history
+          ?.record({ kind: 'mcpweb-visit', url: fullUrl, title: connectResult.serverName || fullUrl, targetRef: connectResult.serverId })
+          .catch(() => {});
         setMcpWebConnecting(false);
         return;
       }
@@ -201,6 +213,7 @@ const App: React.FC = () => {
       if (accumulatedContent) {
         setMessages(msgs => [...msgs, { role: 'assistant', content: accumulatedContent }]);
       }
+      window.surge?.history?.record({ kind: 'chat', title: query.slice(0, 80) }).catch(() => {});
       setStreamContent('');
       setIsStreaming(false);
     });
@@ -226,6 +239,16 @@ const App: React.FC = () => {
       }
     }
   }, [messages, isStreaming, selectedModel, navigateToUrl]);
+
+  // MCP-UI host "prompt" actions: an embedded MCP App can push a prompt into the chat.
+  useEffect(() => {
+    const onPrompt = (e: Event) => {
+      const text = (e as CustomEvent).detail;
+      if (typeof text === 'string' && text) handleSubmit(text);
+    };
+    window.addEventListener('surge:prompt', onPrompt as EventListener);
+    return () => window.removeEventListener('surge:prompt', onPrompt as EventListener);
+  }, [handleSubmit]);
 
   const handleNewChat = useCallback(() => {
     // Disconnect MCPWeb if connected
@@ -324,9 +347,16 @@ const App: React.FC = () => {
           onShowMcpWeb={() => setShowMcpWeb(!showMcpWeb)}
           onOpenInBrowser={handleOpenInBrowser}
           onOpenExternal={handleOpenExternal}
-          onBack={() => {}}
-          onForward={() => {}}
+          onBack={() => window.surge?.browser?.back()}
+          onForward={() => window.surge?.browser?.forward()}
           onRefresh={() => browserUrl && navigateToUrl(browserUrl)}
+          onBookmark={() => {
+            if (browserUrl) {
+              window.surge?.bookmarks
+                ?.add({ url: browserUrl, title: browserUrl, kind: mcpWebConnected ? 'mcpweb' : 'web' })
+                .catch(() => {});
+            }
+          }}
         />
       )}
 

@@ -11,6 +11,7 @@ import {
 } from '@surge/core';
 import { SettingsService } from './services/settings-service';
 import { BrowserService } from './services/browser-service';
+import { registerLocalDataHandlers } from './services/local-data';
 
 let aiService: AiService;
 let mcpManager: McpManager;
@@ -39,6 +40,9 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
     tools: toolDefsToMcpTools('browser', browserService.getToolDefinitions(), 'browser__'),
     callTool: (toolName: string, args: any) => browserService.executeTool(toolName, args),
   });
+
+  // ── Local-first data: storage, bookmarks/history IPC + virtual server, discovery ──
+  registerLocalDataHandlers(mcpManager, settingsService);
 
   // ── Tool execution router (uniform over real + virtual + MCPWeb servers) ──
   const executeTool = async (tc: PendingToolCall): Promise<ToolExecutionResult> => {

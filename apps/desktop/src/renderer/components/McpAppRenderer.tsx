@@ -1,129 +1,126 @@
 import React, { useRef, useEffect, useState } from 'react';
 import './McpAppRenderer.css';
 
+export type HostAction =
+  | { type: 'tool'; payload: { toolName: string; params?: any; serverId?: string } }
+  | { type: 'prompt'; payload: { text: string } }
+  | { type: 'link'; payload: { url: string } }
+  | { type: 'notify'; payload: { message: string } };
+
 interface McpAppRendererProps {
-  htmlContent: string;
+  /** Inline HTML (mcp-ui text/html or Apps-SDK template). */
+  htmlContent?: string;
+  /** External URL app (mcp-ui text/uri-list). */
+  url?: string;
   toolName: string;
   serverName?: string;
-  onOpenLink?: (url: string) => void;
-  onMessage?: (data: any) => void;
+  serverId?: string;
+  onHostAction?: (action: HostAction) => void;
 }
 
+const MIN_H = 100;
+const MAX_H = 800;
+
 /**
- * Renders MCP App UI content in a sandboxed iframe.
- * Supports rich HTML including images, tables, video, audio, and interactive elements.
- * All content runs in a secure sandboxed environment.
+ * Renders MCP Apps / MCP-UI content. Inline HTML runs in a null-origin sandbox
+ * (srcdoc + allow-scripts only, strict CSP) so server-provided markup can never reach
+ * the Surge renderer's origin/DOM. External URL apps load in a sandboxed iframe under
+ * their own remote origin. The iframe talks to the host via window.mcpUi.postMessage.
  */
 const McpAppRenderer: React.FC<McpAppRendererProps> = ({
   htmlContent,
+  url,
   toolName,
   serverName,
-  onOpenLink,
-  onMessage,
+  serverId,
+  onHostAction,
 }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [iframeHeight, setIframeHeight] = useState(200);
 
+  const isUrlApp = !!url && !htmlContent;
+
+  // Build the srcdoc for inline HTML apps.
+  const srcDoc = !isUrlApp
+    ? `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: https:; media-src data: https:; font-src data: https:; connect-src 'none'; form-action 'none';">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; color: #f1f5f9; background: #111827; padding: 16px; line-height: 1.6; font-size: 14px; }
+  a { color: #67e8f9; }
+  img, video, audio { max-width: 100%; border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+  th, td { padding: 8px 12px; border: 1px solid rgba(99,102,241,0.15); text-align: left; }
+  th { background: rgba(17,24,39,0.9); color: #67e8f9; font-weight: 600; }
+  pre { background: #0a0e1a; border: 1px solid rgba(99,102,241,0.15); border-radius: 8px; padding: 12px; overflow-x: auto; }
+  button { background: linear-gradient(135deg, #06b6d4, #8b5cf6); color: #fff; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; }
+  input, select, textarea { background: rgba(15,20,35,0.9); border: 1px solid rgba(99,102,241,0.15); color: #f1f5f9; padding: 8px 12px; border-radius: 8px; font-family: inherit; }
+</style>
+</head>
+<body>
+${htmlContent ?? ''}
+<script>
+(function(){
+  function send(type, payload){ window.parent.postMessage({ __mcpUi: true, type: type, payload: payload || {} }, '*'); }
+  // MCP-UI host API
+  window.mcpUi = {
+    postMessage: function(msg){ if (msg && msg.type) send(msg.type, msg.payload); },
+    callTool: function(toolName, params){ send('tool', { toolName: toolName, params: params }); },
+    sendPrompt: function(text){ send('prompt', { text: text }); },
+    openLink: function(url){ send('link', { url: url }); },
+    notify: function(message){ send('notify', { message: message }); }
+  };
+  // Back-compat with the previous surgeMessage bridge
+  window.surgeMessage = function(data){ send('notify', { message: typeof data === 'string' ? data : JSON.stringify(data) }); };
+  function reportHeight(){ send('resize', { height: document.body.scrollHeight }); }
+  try { new ResizeObserver(reportHeight).observe(document.body); } catch (e) {}
+  reportHeight();
+  document.addEventListener('click', function(e){
+    var a = e.target && e.target.closest ? e.target.closest('a') : null;
+    if (a && a.href){ e.preventDefault(); send('link', { url: a.href }); }
+  });
+})();
+</script>
+</body>
+</html>`
+    : undefined;
+
+  // Listen for host messages from the iframe (validated against the iframe's window).
   useEffect(() => {
-    if (!iframeRef.current || !htmlContent) return;
-
-    // Wrap the HTML content with styling and message passing
-    const wrappedHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            color: #f1f5f9;
-            background: #111827;
-            padding: 16px;
-            line-height: 1.6;
-            font-size: 14px;
-          }
-          a { color: #67e8f9; }
-          img { max-width: 100%; border-radius: 8px; }
-          video, audio { max-width: 100%; border-radius: 8px; }
-          table { width: 100%; border-collapse: collapse; margin: 8px 0; }
-          th, td { padding: 8px 12px; border: 1px solid rgba(99,102,241,0.15); text-align: left; }
-          th { background: rgba(17,24,39,0.9); color: #67e8f9; font-weight: 600; }
-          tr:hover { background: rgba(99,102,241,0.05); }
-          pre { background: #0a0e1a; border: 1px solid rgba(99,102,241,0.15); border-radius: 8px; padding: 12px; overflow-x: auto; }
-          code { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
-          h1, h2, h3 { color: #f1f5f9; margin: 12px 0 8px; }
-          button { background: linear-gradient(135deg, #06b6d4, #8b5cf6); color: white; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; }
-          button:hover { opacity: 0.9; }
-          input, select, textarea { background: rgba(15,20,35,0.9); border: 1px solid rgba(99,102,241,0.15); color: #f1f5f9; padding: 8px 12px; border-radius: 8px; font-family: inherit; }
-          input:focus, textarea:focus { outline: none; border-color: #06b6d4; }
-          .chart, .dashboard { border: 1px solid rgba(99,102,241,0.15); border-radius: 8px; padding: 16px; margin: 8px 0; }
-        </style>
-      </head>
-      <body>
-        ${htmlContent}
-        <script>
-          // Report height to parent for auto-sizing
-          function reportHeight() {
-            const height = document.body.scrollHeight;
-            window.parent.postMessage({ type: 'surge:resize', height }, '*');
-          }
-
-          // Observe size changes
-          const observer = new ResizeObserver(reportHeight);
-          observer.observe(document.body);
-          reportHeight();
-
-          // Intercept link clicks
-          document.addEventListener('click', (e) => {
-            const anchor = e.target.closest('a');
-            if (anchor && anchor.href) {
-              e.preventDefault();
-              window.parent.postMessage({ type: 'surge:openLink', url: anchor.href }, '*');
-            }
-          });
-
-          // Allow content to send messages to host
-          window.surgeMessage = (data) => {
-            window.parent.postMessage({ type: 'surge:message', data }, '*');
-          };
-        </script>
-      </body>
-      </html>
-    `;
-
-    const blob = new Blob([wrappedHtml], { type: 'text/html' });
-    const blobUrl = URL.createObjectURL(blob);
-    iframeRef.current.src = blobUrl;
-
-    return () => URL.revokeObjectURL(blobUrl);
-  }, [htmlContent]);
-
-  // Listen for messages from iframe
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      const data = event.data;
-      if (!data || typeof data !== 'object') return;
-
+    const handler = (event: MessageEvent) => {
+      if (iframeRef.current && event.source !== iframeRef.current.contentWindow) return;
+      const data: any = event.data;
+      if (!data || typeof data !== 'object' || !data.__mcpUi) return;
+      const payload = data.payload || {};
       switch (data.type) {
-        case 'surge:resize':
-          setIframeHeight(Math.min(Math.max(data.height || 200, 100), 800));
+        case 'resize':
+          setIframeHeight(Math.min(Math.max(payload.height || 200, MIN_H), MAX_H));
           setIsLoading(false);
           break;
-        case 'surge:openLink':
-          if (data.url && onOpenLink) onOpenLink(data.url);
+        case 'tool':
+          onHostAction?.({ type: 'tool', payload: { toolName: payload.toolName, params: payload.params, serverId } });
           break;
-        case 'surge:message':
-          if (onMessage) onMessage(data.data);
+        case 'prompt':
+          onHostAction?.({ type: 'prompt', payload: { text: payload.text || payload.prompt || '' } });
+          break;
+        case 'link':
+          if (payload.url) onHostAction?.({ type: 'link', payload: { url: payload.url } });
+          break;
+        case 'notify':
+          onHostAction?.({ type: 'notify', payload: { message: payload.message || '' } });
+          break;
+        default:
           break;
       }
     };
-
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, [onOpenLink, onMessage]);
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [onHostAction, serverId]);
 
   return (
     <div className="mcp-app-renderer">
@@ -138,16 +135,29 @@ const McpAppRenderer: React.FC<McpAppRendererProps> = ({
         {isLoading && (
           <div className="mar-loading">
             <div className="spinner"></div>
-            <span>Loading MCP UI...</span>
+            <span>Loading MCP UI…</span>
           </div>
         )}
-        <iframe
-          ref={iframeRef}
-          className="mar-iframe"
-          style={{ height: `${iframeHeight}px`, opacity: isLoading ? 0 : 1 }}
-          sandbox="allow-scripts allow-same-origin"
-          title={`MCP App: ${toolName}`}
-        />
+        {isUrlApp ? (
+          <iframe
+            ref={iframeRef}
+            className="mar-iframe"
+            style={{ height: `${iframeHeight}px`, opacity: isLoading ? 0 : 1 }}
+            src={url}
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            onLoad={() => setIsLoading(false)}
+            title={`MCP App: ${toolName}`}
+          />
+        ) : (
+          <iframe
+            ref={iframeRef}
+            className="mar-iframe"
+            style={{ height: `${iframeHeight}px`, opacity: isLoading ? 0 : 1 }}
+            srcDoc={srcDoc}
+            sandbox="allow-scripts"
+            title={`MCP App: ${toolName}`}
+          />
+        )}
       </div>
     </div>
   );
