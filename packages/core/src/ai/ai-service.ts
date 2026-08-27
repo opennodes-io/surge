@@ -2,13 +2,14 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
 import type { SettingsPort } from '../ports/index.js';
 import type { ToolDefinition } from '../mcp/mcp-manager.js';
+import { OnpRegistryClient, type OnpOffering } from '../onp/index.js';
 
 export type ModelLevel = 'quick' | 'smart' | 'best';
 
 export interface AiModel {
   id: string;
   name: string;
-  provider: 'gemini' | 'groq' | 'ollama' | 'claude' | 'mistral' | 'vllm';
+  provider: 'gemini' | 'groq' | 'ollama' | 'claude' | 'mistral' | 'vllm' | 'onp';
   tier: 'free' | 'pro' | 'enterprise';
   description: string;
   supportsToolCalling: boolean;
@@ -65,6 +66,13 @@ export class AiService {
   private claudeClient: OpenAI | null = null;
   private mistralClient: OpenAI | null = null;
   private vllmClient: OpenAI | null = null;
+
+  // OpenNodes (ONP) registry: dynamic model discovery with trust tiers + measured perf
+  private onpRegistry: OnpRegistryClient | null = null;
+  private onpOfferings: Map<string, OnpOffering> = new Map();
+  private onpModels: AiModel[] = [];
+  private onpClients: Map<string, OpenAI> = new Map();
+  private onpLoadedAt = 0;
 
   constructor(settings: SettingsPort) {
     this.settings = settings;
@@ -127,6 +135,80 @@ export class AiService {
         baseURL,
       });
     }
+
+    // OpenNodes registry (model discovery — no key needed for browsing)
+    const onpUrl = this.settings.get('ai.onpRegistryUrl') || 'http://127.0.0.1:4300';
+    this.onpRegistry = new OnpRegistryClient(onpUrl);
+    this.onpOfferings.clear();
+    this.onpClients.clear();
+    this.onpModels = [];
+    this.onpLoadedAt = 0;
+  }
+
+  /** Refresh the ONP model list from the registry (tolerates the registry being offline). */
+  async refreshOnpModels(): Promise<void> {
+    if (!this.onpRegistry) return;
+    try {
+      const offerings = await this.onpRegistry.searchOfferings({ modality: 'text', sort: 'rank', limit: 40 });
+      this.onpOfferings = new Map(offerings.map((o) => [o.key, o]));
+      this.onpModels = offerings.map((o) => {
+        const price = o.pricing.inputPerMtok === 0 && o.pricing.outputPerMtok === 0
+          ? 'Free' : `$${o.pricing.inputPerMtok}/$${o.pricing.outputPerMtok} per MTok`;
+        const bits = [o.tier.toUpperCase(), o.nodeId];
+        if (o.measured.ttftMsP50 != null) bits.push(`${o.measured.ttftMsP50}ms measured`);
+        if (o.institutional) bits.push('institutional');
+        if (o.local) bits.push(`local: ${o.local.run}`);
+        return {
+          id: `onp:${o.key}`,
+          name: o.modelName,
+          provider: 'onp' as const,
+          tier: 'free' as const,           // visibility gating stays with Surge tiers
+          description: bits.join(' · '),
+          supportsToolCalling: o.supports.includes('tool_calls'),
+          level: (o.tier === 'verified' ? 'smart' : 'quick') as ModelLevel,
+          costEstimate: price,
+        };
+      });
+      this.onpLoadedAt = Date.now();
+    } catch {
+      // registry unreachable — keep whatever we had; the static model list still works
+    }
+  }
+
+  /** Static providers plus live ONP registry models (refreshed at most once a minute). */
+  async listModels(): Promise<AiModel[]> {
+    if (Date.now() - this.onpLoadedAt > 60_000) await this.refreshOnpModels();
+    return [...this.getAvailableModels(), ...this.onpModels];
+  }
+
+  /** Pre-price a prompt against an ONP model (enforceable registry estimate). */
+  async estimateOnp(modelKey: string, estInputTokens = 1000, estOutputTokens = 300) {
+    if (!modelKey.startsWith('onp:') || !this.onpRegistry) return null;
+    return this.onpRegistry.estimate([
+      { offering: modelKey.slice(4), est_input_tokens: estInputTokens, est_output_tokens: estOutputTokens },
+    ]);
+  }
+
+  private getOnpClient(modelKey: string): { client: OpenAI | null; modelId: string } {
+    const key = modelKey.slice(4); // strip "onp:"
+    const offering = this.onpOfferings.get(key);
+    if (!offering) {
+      throw new Error(`ONP offering ${key} is not in the current model list — refresh models first.`);
+    }
+    let client = this.onpClients.get(key) ?? null;
+    if (!client) {
+      client = new OpenAI({
+        apiKey: this.settings.get('ai.onpApiKey') || 'not-required',
+        baseURL: offering.endpointBase,
+        defaultHeaders: {
+          // ONP invocation profile: pin what we're calling and the price we saw
+          'onp-offering': key,
+          'onp-card-revision': offering.cardRevision,
+        },
+      });
+      this.onpClients.set(key, client);
+    }
+    return { client, modelId: offering.bindingModelId };
   }
 
   getAvailableModels(): AiModel[] {
@@ -153,6 +235,7 @@ export class AiService {
   }
 
   private getClientForModel(modelKey: string): { client: OpenAI | null; modelId: string } {
+    if (modelKey.startsWith('onp:')) return this.getOnpClient(modelKey);
     const modelId = this.getModelId(modelKey);
     switch (modelKey) {
       case 'groq-llama': return { client: this.groqClient, modelId };

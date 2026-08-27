@@ -2,6 +2,8 @@
 
 Surge is a state-of-the-art **Model Context Protocol (MCP)** client for general users and developers — a "browser for MCP." It discovers MCP servers (with quality ratings), connects over stdio/SSE/streamable-HTTP, renders **MCP Apps / MCP-UI** interactive surfaces, turns any website into callable tools, and keeps **bookmarks + history** that other MCP clients can share.
 
+Surge is also a native **[OpenNodes](https://opennodes.io)** client: it discovers AI models from an ONP registry (trust tiers, measured latency, per-MTok pricing), pre-prices prompts with enforceable estimates, and invokes nodes directly with pinned offering/revision headers (`packages/core/src/onp/`). Together that makes Surge one client over both discovery layers — **models via OpenNodes, tools via MCP**.
+
 ## Monorepo layout (pnpm workspaces)
 
 ```
@@ -10,6 +12,7 @@ packages/core/                @surge/core — platform-agnostic logic (source-on
   mcp/        MCP manager (stdio/SSE/HTTP), MCPWeb detector, virtual-server registry, in-process servers
   orchestrator/ multi-round tool-calling loop
   discovery/  typed MCP_Index REST client (quality scores, uiType, trust tiers) + registry.mcp.so fallback
+  onp/        typed OpenNodes registry client (model offerings, trust tiers, estimates) + `onp` AI provider
   storage/    local-first SQLite (@libsql/client) — bookmarks/collections/tags/history/profiles/agents/chat
   ui/         MCP Apps / MCP-UI detection + plugin renderer registry
   webmcp/     Web→MCP ephemeral adapter (browser tools as a virtual MCP server)

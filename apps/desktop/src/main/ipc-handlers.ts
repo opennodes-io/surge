@@ -74,7 +74,7 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
     }
   });
 
-  ipcMain.handle('ai:getModels', async () => aiService.getAvailableModels());
+  ipcMain.handle('ai:getModels', async () => aiService.listModels());
 
   // ── AI Streaming with multi-round tool orchestration (core/orchestrator) ──
   ipcMain.handle('ai:streamChat', async (event, messages: any[], model: string) => {

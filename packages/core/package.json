@@ -14,6 +14,7 @@
     "./orchestrator": "./src/orchestrator/index.ts",
     "./webmcp": "./src/webmcp/index.ts",
     "./discovery": "./src/discovery/index.ts",
+    "./onp": "./src/onp/index.ts",
     "./ui": "./src/ui/index.ts"
   },
   "scripts": {
