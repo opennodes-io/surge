@@ -85,7 +85,7 @@ async function main() {
 
   const settingsStore: Record<string, any> = { 'ai.onpRegistryUrl': `http://127.0.0.1:${registry.port}` };
   const settings: SettingsPort = {
-    get: (k) => settingsStore[k], set: (k, v) => { settingsStore[k] = v; }, getTier: () => 'free', getMaxConnections: () => 3,
+    get: (k) => settingsStore[k], set: (k, v) => { settingsStore[k] = v; }, getMaxConnections: () => 3,
   };
   const vault = new Map<string, string>();
   const secrets: SecretStorePort = {

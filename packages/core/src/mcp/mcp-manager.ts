@@ -155,11 +155,7 @@ export class McpManager {
     // Check connection limit
     const maxConn = this.settings.getMaxConnections();
     if (this.connections.size >= maxConn) {
-      throw new Error(
-        `Connection limit reached (${maxConn}). ${
-          this.settings.getTier() === 'free' ? 'Upgrade to Pro for unlimited connections.' : ''
-        }`
-      );
+      throw new Error(`Connection limit reached (${maxConn} servers). Disconnect one, or raise mcp.maxConnections in the settings.`);
     }
 
     // Don't double-connect

@@ -137,7 +137,6 @@ contextBridge.exposeInMainWorld('surge', {
   settings: {
     get: (key: string) => ipcRenderer.invoke('settings:get', key),
     set: (key: string, value: any) => ipcRenderer.invoke('settings:set', key, value),
-    getTier: () => ipcRenderer.invoke('settings:getTier'),
     secrets: () => ipcRenderer.invoke('settings:secrets'),
   },
 

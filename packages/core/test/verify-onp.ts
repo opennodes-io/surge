@@ -11,7 +11,6 @@ import type { SettingsPort } from '../src/ports/index.js';
 const settings: SettingsPort = {
   get: (key: string) => ({ 'ai.onpRegistryUrl': 'http://127.0.0.1:4300' } as Record<string, string>)[key],
   set: () => {},
-  getTier: () => 'enterprise',
   getMaxConnections: () => 10,
 };
 
