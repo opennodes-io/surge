@@ -89,7 +89,7 @@ Verification scripts for the ONP integration:
 
 **Driving the real app** (no Playwright in the repo): run `pnpm --filter @surge/desktop build`. Then from `apps/desktop` run `electron . --remote-debugging-port=9333 --user-data-dir=<tmp dir>`. Drive the renderer page (`…/renderer/index.html`) over CDP: `Runtime.evaluate` and `Page.captureScreenshot`; Node 24 has a global `WebSocket`. `--user-data-dir` keeps the user's real `surge-settings.json` and `surge.db` untouched. Call `window.surge.window.resize('expanded')` before screenshotting dropdowns.
 
-## Known state (2026-10-06)
+## Known state (2026-10-07)
 
 - **All four packages typecheck clean**, and `pnpm --filter @surge/desktop build` succeeds. The old `./mcp-manager` import in `apps/desktop/src/main/services/browser-service.ts` now comes from `@surge/core/mcp`.
 - **ONP discovery works against the hosted registry by default**, verified in the running app: 40 ONP models in the picker, each with the description "TIER · node · measured ms" and a price.
@@ -177,9 +177,12 @@ Verification scripts for the ONP integration:
 - **No plans or tiers** (removed before going public). Every provider is listed for everyone; the Settings "Plan" tab, PRO locks, `license.*` / `search.daily*` settings and the 3-server cap are gone.
   - `SettingsPort` is just `get` / `set` / `getMaxConnections`. That reads `mcp.maxConnections` (default 25), a resource guard, not a plan limit.
   - A paid offering, if any, would come back as a hosted service, not client-side gating.
-- **Public-repo hygiene:** `SECURITY.md` (private vulnerability reporting, scope, where data lives) and `CONTRIBUTING.md`.
-  - The history was scanned with gitleaks before going public (21 commits, no findings).
-  - `PLAN.md` (an obsolete .NET plan) was removed, and `.claude/launch.json` is no longer tracked.
+- **Public since 2026-10-06** ([opennodes-io/surge#2](https://github.com/opennodes-io/surge/pull/2) prepared it).
+  - Before the flip: gitleaks over all 24 commits, no findings. `PLAN.md` (an obsolete .NET plan) was removed, and `.claude/launch.json` is no longer tracked.
+  - `SECURITY.md` points at GitHub private vulnerability reporting; `CONTRIBUTING.md` covers setup, checks and ground rules.
+  - Enabled on the repo: secret scanning with push protection, Dependabot alerts, private vulnerability reporting. Description, homepage (opennodes.io) and topics are set. Dependabot security-update PRs are off.
+  - Every OpenNodes surface links the repo: the landing page and README ([opennodes-io/opennodes#2](https://github.com/opennodes-io/opennodes/pull/2)), and the registry web app's Desktop & Apps panel, shipped in `@opennodes/registry` 0.1.7 ([opennodes-io/opennodes#3](https://github.com/opennodes-io/opennodes/pull/3)) and live on registry.opennodes.io.
+  - The opennodes registry server is deployed over SSH (`deploy/RELEASING.md` step 5). Claude can't reach it from here, so the user runs that step.
 - `.gitignore` covers `.claude/` and `tmpclaude-*`. `.npmrc` is benign (`node-linker=hoisted`). Never commit API keys; AI provider keys belong in the settings port / OS keychain.
 
 ## Conventions
