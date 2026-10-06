@@ -4,7 +4,7 @@ Surge is a desktop "browser for MCP" **and the reference desktop client for Open
 
 ## Relationship to OpenNodes (read this first)
 
-- The standard, the registry, the Node Kit, and the hosted services live in **github.com/opennodes-io/opennodes** (public, Apache-2.0). This repo (`opennodes-io/surge`, private for now) must stay a *client*: it consumes ONP only through public surfaces.
+- The standard, the registry, the Node Kit, and the hosted services live in **github.com/opennodes-io/opennodes** (public, Apache-2.0). This repo (`opennodes-io/surge`, public, Apache-2.0) must stay a *client*: it consumes ONP only through public surfaces.
 - Consume the **published packages**, never copy code from the opennodes repo:
   - `@opennodes/core` — `extractFeatures` / `recommend` (the advisor: task → best node+model, deterministic, prompt never leaves the machine), `estimateBounds`, `costForUsage`, card/JWS/receipt verification.
   - `@opennodes/cli` — `OnpClient` (search, estimate, `resolveCard`, `checkPolicy`, pinned invoke with receipt verification, `receipts` / `spendTotal()`) and the gateway / stdio MCP server if ever needed in-process. `src/gateway.js` is the reference for streaming + receipts + per-host keys.
@@ -67,7 +67,8 @@ apps/mobile/        @surge/mobile — Capacitor scaffold (browser features gated
 servers/bookmarks-history-mcp/   standalone MCP server (stdio + HTTP), tsup
 ```
 
-Commands: `pnpm install` · `pnpm typecheck` (all packages) · `pnpm dev` (desktop) · `pnpm build`.
+Commands: `pnpm install` · `pnpm typecheck` (all packages) · `pnpm test` (all hermetic verification scripts, via `scripts/test.mjs`) · `pnpm dev` (desktop) · `pnpm build`.
+CI (`.github/workflows/ci.yml`, ubuntu) runs install `--frozen-lockfile`, typecheck, `pnpm test`, and the desktop and server builds on every push to `main` and every PR.
 Verification scripts for the ONP integration:
 - `packages/core/test/verify-onp-invocation.ts`: 38 checks against an in-process mock registry, an offline "admitted" node, and a mock node that serves a schema-valid signed card and signs real Ed25519 receipts; no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-onp-invocation.ts`. Covers:
   - pins and the 409 re-pin/retry, price raises within and beyond the policy, offering-mismatch
@@ -173,6 +174,12 @@ Verification scripts for the ONP integration:
     - Make the GIF from the MP4: fed the variable-duration concat directly, ffmpeg played every hold too short.
     - Park a synthetic pointer (`Input.dispatchMouseEvent`) before scenes, because the real pointer's hover state leaks into frames.
 - Licensed **Apache-2.0** (`LICENSE`, "Copyright 2026 The Surge Contributors"), matching the OpenNodes standard; every `package.json` declares it.
+- **No plans or tiers** (removed before going public). Every provider is listed for everyone; the Settings "Plan" tab, PRO locks, `license.*` / `search.daily*` settings and the 3-server cap are gone.
+  - `SettingsPort` is just `get` / `set` / `getMaxConnections`. That reads `mcp.maxConnections` (default 25), a resource guard, not a plan limit.
+  - A paid offering, if any, would come back as a hosted service, not client-side gating.
+- **Public-repo hygiene:** `SECURITY.md` (private vulnerability reporting, scope, where data lives) and `CONTRIBUTING.md`.
+  - The history was scanned with gitleaks before going public (21 commits, no findings).
+  - `PLAN.md` (an obsolete .NET plan) was removed, and `.claude/launch.json` is no longer tracked.
 - `.gitignore` covers `.claude/` and `tmpclaude-*`. `.npmrc` is benign (`node-linker=hoisted`). Never commit API keys; AI provider keys belong in the settings port / OS keychain.
 
 ## Conventions
@@ -184,10 +191,10 @@ Verification scripts for the ONP integration:
 
 ## What a good next session does
 
-1. **Launch kit is live (2026-10-06).** [opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1) is merged and deployed to opennodes.io. The Surge entry has a dark/light hero (`site/media/`), and the README Ecosystem bullet embeds `docs/media/surge-demo.gif`.
-   - A local clone is at `D:/Projects/AI/Projects/opennodes`.
-   - To refresh the assets, rerun `scripts/launch-kit/capture.mjs`, copy the files over, and open a PR there. Merging to `main` deploys the site.
-   - Next: open this repository for the first public build.
+1. **First installers.** The repo is public and source-only.
+   - Next: electron-builder packaging and a Windows release on GitHub Releases. That needs a code-signing certificate, or SmartScreen warns about an unknown publisher.
+   - Then macOS and Linux builds, once someone has tested them.
+   - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
 2. **Follow-ups:**
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
