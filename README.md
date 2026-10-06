@@ -1,47 +1,100 @@
-# Surge — a modern MCP client
+# Surge
 
-Surge is a state-of-the-art **Model Context Protocol (MCP)** client for general users and developers — a "browser for MCP." It discovers MCP servers (with quality ratings), connects over stdio/SSE/streamable-HTTP, renders **MCP Apps / MCP-UI** interactive surfaces, turns any website into callable tools, and keeps **bookmarks + history** that other MCP clients can share.
+[![CI](https://github.com/opennodes-io/surge/actions/workflows/ci.yml/badge.svg)](https://github.com/opennodes-io/surge/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Surge is also a native **[OpenNodes](https://opennodes.io)** client: it discovers AI models from an ONP registry (trust tiers, measured latency, per-MTok pricing), pre-prices prompts with enforceable estimates, and invokes nodes directly with pinned offering/revision headers (`packages/core/src/onp/`). Together that makes Surge one client over both discovery layers — **models via OpenNodes, tools via MCP**.
+**A desktop "browser for MCP" and the reference [OpenNodes](https://opennodes.io) client** — tools through the Model Context Protocol, models through the OpenNodes Protocol, in one app.
 
-## Monorepo layout (pnpm workspaces)
+<picture>
+  <source srcset="docs/launch-kit/media/surge-browser-receipt-dark.png" media="(prefers-color-scheme: dark)">
+  <img src="docs/launch-kit/media/surge-browser-receipt-light.png" width="900" alt="Surge with opennodes.io open in its browser: a page tool read the site, and the answer came from an OpenNodes node chosen by the advisor, with its verified receipt shown under the reply">
+</picture>
 
-```
-packages/core/                @surge/core — platform-agnostic logic (source-only TS, bundled by consumers)
-  ai/         multi-vendor LLM service (Gemini, Groq, Claude, Mistral, Ollama, vLLM) + tool calling
-  mcp/        MCP manager (stdio/SSE/HTTP), MCPWeb detector, virtual-server registry, in-process servers
-  orchestrator/ multi-round tool-calling loop
-  discovery/  typed MCP_Index REST client (quality scores, uiType, trust tiers) + registry.mcp.so fallback
-  onp/        typed OpenNodes registry client (model offerings, trust tiers, estimates) + `onp` AI provider
-  storage/    local-first SQLite (@libsql/client) — bookmarks/collections/tags/history/profiles/agents/chat
-  ui/         MCP Apps / MCP-UI detection + plugin renderer registry
-  webmcp/     Web→MCP ephemeral adapter (browser tools as a virtual MCP server)
-  ports/      platform interfaces (settings/browser/secret) — the seam for desktop vs mobile
-apps/desktop/                 @surge/desktop — Electron shell (window, WebContentsView, tray, thin IPC bridge)
-apps/mobile/                  @surge/mobile — Capacitor scaffold (reuses @surge/core; browser features gated off)
-servers/bookmarks-history-mcp/ @surge/bookmarks-history-mcp — standalone, reusable MCP server (stdio + HTTP)
-```
+> **Pre-release.** Tested on Windows 11; macOS and Linux are untested. There are no installers yet — build from source.
 
-## Key design choices
+## What it does
 
-- **Shared core, thin shells.** All MCP/AI/storage/discovery logic lives in `@surge/core`, consumed by the desktop (esbuild bundles it; native deps stay external), the standalone server (tsup), and mobile.
-- **Local-first storage via `@libsql/client`** — an N-API module that is ABI-stable across Electron *and* plain Node, so the desktop and the standalone server open the same `surge.db` with no native rebuild. The schema is sync-ready (UUID ids, `updated_at`, tombstones, `rev`, `origin_device_id`) for an optional Turso/libsql sync layer later.
-- **Bookmarks + history are an MCP server**, so any MCP client (Claude Desktop, Cursor, …) can use Surge's bookmarks/history — see [`servers/bookmarks-history-mcp`](servers/bookmarks-history-mcp/README.md).
-- **MCP-UI is sandboxed.** Inline server HTML renders in a null-origin iframe (`srcdoc` + `allow-scripts` only + strict CSP); the host bridge speaks the MCP-UI action protocol (tool / prompt / link / notify).
-- **Web→MCP.** Browser page tools are registered as a virtual `browser` MCP server and routed uniformly; code-gen of persistent per-site agents is a designed seam (`AgentSpec` + `agents` table) for a later phase.
+**Tools, through MCP**
+- Connect MCP servers over stdio, SSE or streamable HTTP, and find them in a discovery browser: the public registry.mcp.so catalog, or quality ratings and trust tiers from an MCP_Index registry if you point `mcp.indexUrl` at one.
+- An embedded browser whose page tools are exposed as an MCP server, plus per-site agents that are declarative, approved before they run, and sandboxed when they use code.
+- MCP Apps / MCP-UI surfaces rendered in a sandboxed, null-origin iframe.
+- Bookmarks and history that other MCP clients can use too, through a standalone MCP server.
 
-## Develop
+**Models, through OpenNodes**
+- A model picker fed live from an OpenNodes registry: trust tier, registry-measured latency and per-MTok price for every node.
+- **Auto** runs the OpenNodes advisor on your machine — the prompt never leaves it — picks a node per prompt, and falls back if one is down.
+- Every call goes straight to the node, pinned to its card revision; a price change is re-resolved from the node's signed card and re-checked against your policy.
+- Every call's signed receipt is verified (`amount = usage × pinned price`) and shown under the reply; a spend dashboard keeps the ledger.
+- A spend policy (per request, per day, price cap, schemes, minimum tier) is checked before every call, with spending **off** until you set a budget.
+- **Private mode**, one click: model calls go only to your local Ollama and LAN machines, through an embedded OpenNodes router; the registry is not contacted.
+
+**Also**
+- Gemini, Groq, Claude, Mistral, Ollama, and any OpenAI-compatible endpoint (vLLM, LM Studio, LocalAI, …).
+- API keys kept in the OS keychain (Electron `safeStorage`); imported catalogs get one key per host, sent only to that host.
+
+## Build from source
+
+Needs [Node.js](https://nodejs.org) 22.5 or newer, [pnpm](https://pnpm.io) 10 (`corepack enable`), and Git. A local [Ollama](https://ollama.com) is optional — it backs private mode.
 
 ```bash
+git clone https://github.com/opennodes-io/surge.git
+cd surge
 pnpm install
-pnpm build                 # build/typecheck every package
-pnpm --filter @surge/desktop dev     # run the desktop app
-pnpm --filter @surge/bookmarks-history-mcp build   # build the standalone MCP server
+pnpm --filter @surge/desktop dev       # run the desktop app with hot reload
 ```
 
-## Status
+Or build and run without the dev server:
 
-First revision milestone implemented: monorepo + shared core, standalone bookmarks/history MCP server, Web→MCP adapter, MCP Apps/MCP-UI rendering, discovery+rating browser, in-app bookmarks/history, mobile scaffold. Deferred (seams in place): agentic code-gen of persistent site servers + agent profiles, profiles/chat-history UI, cloud sync, gateway runtime, diffusion/image models.
+```bash
+pnpm --filter @surge/desktop build
+pnpm --filter @surge/desktop start
+```
+
+On first run, the OpenNodes models need no setup: the admitted nodes are free, so they work under the default spending-off policy. For the other providers add a key in **Settings → API Keys** (Gemini and Groq have free tiers). The registry, spend policy, per-host keys and private mode live in **Settings → Advanced**; the ledger is in **Settings → Spend**.
+
+## Checks
+
+```bash
+pnpm typecheck     # every package
+pnpm test          # the hermetic verification scripts: no network, no API keys
+```
+
+`pnpm test` covers storage and the bookmarks server, per-site agents and their sandbox, the OpenNodes client (pins, 409 handling, receipts against a node that signs real Ed25519 receipts, the spend policy, Auto), per-host keys, the spend ledger and private mode. CI runs the same, plus the desktop build.
+
+## Repository layout
+
+pnpm workspaces:
+
+```
+packages/core/                  @surge/core — platform-agnostic logic (source-only TypeScript, bundled by consumers)
+  ai/            multi-vendor LLM service + tool calling, including the OpenNodes and private-mode providers
+  onp/           OpenNodes: offerings, registry client, advisor, receipts (WebCrypto Ed25519), spend policy
+  mcp/           MCP manager (stdio/SSE/HTTP), MCPWeb detector, virtual-server registry
+  orchestrator/  multi-round tool-calling loop
+  discovery/     MCP server discovery client (quality scores, trust tiers)
+  storage/       local-first SQLite (@libsql/client): bookmarks, history, profiles, agents, chat, spend ledger
+  ui/            MCP Apps / MCP-UI detection and renderer registry
+  webmcp/        Web→MCP adapter and per-site agents
+  ports/         platform interfaces (settings, browser, secrets) — the seam between desktop and mobile
+apps/desktop/                   @surge/desktop — Electron shell (window, WebContentsView, IPC bridge, keychain, embedded router)
+apps/mobile/                    @surge/mobile — Capacitor scaffold (reuses @surge/core; browser features gated off)
+servers/bookmarks-history-mcp/  standalone bookmarks/history MCP server (stdio + HTTP)
+docs/launch-kit/                screenshots, demo and copy; regenerated by scripts/launch-kit/capture.mjs
+```
+
+## Design choices
+
+- **Shared core, thin shells.** All MCP, AI, OpenNodes, storage and discovery logic lives in `@surge/core`, consumed by the desktop (esbuild bundles it; native and Node-only dependencies stay external), the standalone server (tsup) and the mobile scaffold.
+- **Local-first storage via `@libsql/client`** — an N-API module that is ABI-stable across Electron and plain Node, so the desktop and the standalone server open the same `surge.db` without a native rebuild. The schema is sync-ready (UUID ids, `updated_at`, tombstones, `rev`, `origin_device_id`).
+- **Bookmarks and history are an MCP server**, so any MCP client can use them — see [`servers/bookmarks-history-mcp`](servers/bookmarks-history-mcp/README.md).
+- **Untrusted content is sandboxed.** MCP-UI HTML renders in a null-origin iframe (`srcdoc`, `allow-scripts` only, strict CSP); generated per-site agents are declarative data, and their optional code path is approved per agent and isolated.
+- **The OpenNodes client checks, it doesn't trust.** Receipts and the spend policy are platform-agnostic code (WebCrypto), so they run on desktop and mobile alike; cards are validated against the ONP-2 schema and signature-checked with the published [`@opennodes/core`](https://www.npmjs.com/package/@opennodes/core).
+
+## Contributing and security
+
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+The OpenNodes Protocol itself — spec, registry, Node Kit — lives in [opennodes-io/opennodes](https://github.com/opennodes-io/opennodes).
 
 ## License
 
