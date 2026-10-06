@@ -35,6 +35,13 @@ CI runs the checks above on every pull request. If you change the UI, check it i
 
 `CLAUDE.md` holds the working notes for AI coding agents — current state, known issues and gotchas. It's worth a read for humans too.
 
+## Releasing (maintainers)
+
+1. Bump `version` in `apps/desktop/package.json` in a pull request and merge it.
+2. Tag the merge commit and push the tag: `git tag v<version> && git push origin v<version>`. Use the GitHub remote's name, if yours isn't `origin`.
+3. The **Release** workflow builds the installer on Windows (typecheck, tests, `dist:win` and its module check). It attaches the installer, its blockmap and `SHA256SUMS.txt` to a **draft pre-release**. If the tag doesn't match the version, the workflow fails.
+4. Review the draft's notes, try the installer, and publish the release. Nothing is public until you do.
+
 ## Reporting bugs and ideas
 
 Open an issue with what you did, what you expected and what happened (and your OS). Security problems go through [SECURITY.md](SECURITY.md) instead.

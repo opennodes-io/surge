@@ -70,6 +70,7 @@ servers/bookmarks-history-mcp/   standalone MCP server (stdio + HTTP), tsup
 
 Commands: `pnpm install` · `pnpm typecheck` (all packages) · `pnpm test` (all hermetic verification scripts, via `scripts/test.mjs`) · `pnpm dev` (desktop) · `pnpm build` · `pnpm --filter @surge/desktop dist:win` (Windows installer into `apps/desktop/release/`).
 CI (`.github/workflows/ci.yml`, ubuntu) runs install `--frozen-lockfile`, typecheck, `pnpm test`, and the desktop and server builds on every push to `main` and every PR.
+`.github/workflows/release.yml` (windows-latest) runs typecheck, tests and `dist:win`, then uploads the installer, blockmap and `SHA256SUMS.txt` as an artifact. It runs on `v*` tags, on demand, and on PRs that touch packaging paths. On a tag whose name matches `apps/desktop` `version`, a second job (the only one with `contents: write`) attaches the files to a **draft pre-release**. A re-run refreshes a draft but never touches a published release. The release steps are in CONTRIBUTING.md.
 Verification scripts for the ONP integration:
 - `packages/core/test/verify-onp-invocation.ts`: 38 checks against an in-process mock registry, an offline "admitted" node, and a mock node that serves a schema-valid signed card and signs real Ed25519 receipts; no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-onp-invocation.ts`. Covers:
   - pins and the 409 re-pin/retry, price raises within and beyond the policy, offering-mismatch
@@ -207,7 +208,7 @@ Verification scripts for the ONP integration:
 ## What a good next session does
 
 1. **First installers.** A local, unsigned Windows installer builds and works (see "Windows installer" above).
-   - Next: a release workflow (windows-latest, on a `v*` tag) that runs `dist:win` and attaches the installer to a draft GitHub Release; then a README download link.
+   - The release workflow exists (`release.yml`, see Commands). Next: push the first tag (`v0.1.0`) when the user wants a draft, review it, and publish it; then add a README download link.
    - Code signing is the user's decision (a certificate or Azure Trusted Signing). Unsigned, SmartScreen warns about an unknown publisher.
    - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
