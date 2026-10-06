@@ -266,12 +266,16 @@ async function still(app, name, web = null) {
     const left = `${file}.left.png`;
     const right = `${file}.right.png`;
     await shoot(app, left);
+    // The embedded page follows the same theme, as it would on a machine set to dark or light.
+    await web.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+    await sleep(400);
     await shoot(web, right);
     ffmpeg(['-i', left, '-i', right, '-filter_complex', 'hstack=inputs=2', file]);
     fs.rmSync(left);
     fs.rmSync(right);
   }
   await app.eval(`__kit.theme('dark')`);
+  if (web) await web.send('Emulation.setEmulatedMedia', { features: [] });
   log('still', name);
 }
 
@@ -326,6 +330,11 @@ async function main() {
       log('stills…');
       if (privateOk) {
         if (!(await app.eval(`!!document.querySelector('.private-btn.active')`))) {
+          if (!(await app.eval(`!!document.querySelector('.onp-call')`))) {
+            await app.eval(`__kit.openPicker('Smart').then(() => __kit.pick('Auto (OpenNodes'))`);
+            await app.eval(`__kit.type(${JSON.stringify(AUTO_PROMPT)})`);
+            await app.waitFor(replyAfter(0));
+          }
           await app.eval(`document.querySelector('.private-btn').click(), true`);
           await app.waitFor(`document.querySelector('.model-btn').textContent.includes('Auto (private)')`, 30_000);
           const before = await app.eval(`__kit.replies()`);
@@ -367,7 +376,8 @@ async function main() {
       await app.eval(`window.surge.window.resize('expanded'), true`);
       await sleep(1000);
       await app.eval(`__kit.openPicker('Smart')`);
-      await sleep(600);
+      await app.waitFor(`innerHeight >= 600 && !!document.querySelector('.model-option')`, 15_000);
+      await sleep(900);
       await still(app, 'surge-picker');
     }
   } finally {
