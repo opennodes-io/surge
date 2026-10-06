@@ -65,6 +65,13 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   const browserPort = new ElectronBrowserPort(getBrowserView);
   registerAgentHandlers(mcpManager, aiService, browserService, browserPort, settingsService);
 
+  // What the chat's tool-call block shows: the server and the bare tool name from "server__tool".
+  const toolLabels = (namespaced: string) => {
+    const parsed = mcpManager.parseToolName(namespaced);
+    const server = parsed && mcpManager.getConnectedServers().find((s) => s.id === parsed.serverId);
+    return { serverId: parsed?.serverId ?? 'unknown', serverName: server?.name ?? parsed?.serverId, toolName: parsed?.toolName ?? namespaced };
+  };
+
   // ── Tool execution router (uniform over real + virtual + MCPWeb servers) ──
   const executeTool = async (tc: PendingToolCall): Promise<ToolExecutionResult> => {
     const parsed = mcpManager.parseToolName(tc.functionName);
@@ -118,12 +125,12 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
         callbacks: {
           onToken: (token) => sender.send('ai:token', token),
           onToolCallStart: (i) =>
-            sender.send('mcp:toolCall', { id: i.id, name: i.name, status: 'running', args: i.args }),
+            sender.send('mcp:toolCall', { id: i.id, name: i.name, ...toolLabels(i.name), status: 'running', args: i.args }),
           onToolCallResult: (i) =>
             sender.send('mcp:toolCall', {
               id: i.id,
               name: i.name,
-              serverId: i.serverId,
+              ...toolLabels(i.name),
               status: i.status,
               result: i.result,
               durationMs: i.durationMs,

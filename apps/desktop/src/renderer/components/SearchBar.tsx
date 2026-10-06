@@ -45,6 +45,46 @@ const SearchBar: React.FC<SearchBarProps> = ({
     }
   }, [mode]);
 
+  // The idle window is a 160px strip, too short for the model list: grow it while the list is open
+  // (anchoring the list to the button once the window has resized), and shrink it back on close
+  // unless a chat started meanwhile.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  useEffect(() => {
+    if (!showModels) return;
+    // `position: fixed` is relative to the nearest ancestor with a backdrop-filter/transform (the
+    // glass search bar), not the viewport, so measure against that box.
+    const place = () => {
+      const btn = modelBtnRef.current;
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      let box = { top: 0, right: window.innerWidth };
+      for (let el = btn.parentElement; el; el = el.parentElement) {
+        const s = getComputedStyle(el);
+        if (s.backdropFilter !== 'none' || s.transform !== 'none' || s.filter !== 'none' || s.perspective !== 'none') {
+          const r = el.getBoundingClientRect();
+          box = { top: r.top, right: r.right };
+          break;
+        }
+      }
+      setDropdownPos({ top: rect.bottom + 8 - box.top, right: box.right - rect.right });
+    };
+    // The search bar keeps moving after a resize (a 0.4s padding transition), so follow it a little longer.
+    let frame = 0;
+    let until = 0;
+    const follow = () => { place(); if (performance.now() < until) frame = requestAnimationFrame(follow); };
+    const onResize = () => { until = performance.now() + 700; cancelAnimationFrame(frame); follow(); };
+    onResize();
+    window.addEventListener('resize', onResize);
+    const grew = modeRef.current === 'idle';
+    if (grew) window.surge?.window?.resize('expanded');
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', onResize);
+      if (grew && modeRef.current === 'idle') window.surge?.window?.resize('compact');
+    };
+  }, [showModels]);
+
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -115,10 +155,6 @@ const SearchBar: React.FC<SearchBarProps> = ({
             ref={modelBtnRef}
             className={`model-btn btn-ghost btn-sm ${currentLevelMeta.className}`}
             onClick={() => {
-              if (!showModels && modelBtnRef.current) {
-                const rect = modelBtnRef.current.getBoundingClientRect();
-                setDropdownPos({ top: rect.bottom + 8, right: window.innerWidth - rect.right });
-              }
               setShowModels(!showModels);
               setExpandedLevel(null);
             }}

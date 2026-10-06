@@ -247,7 +247,7 @@ export class AiService {
         description: `Picks one of ${poolText} per prompt · ranked on this device, the prompt never leaves it`,
         supportsToolCalling: pool.some((o) => o.supports.includes('tool_calls')),
         level: 'smart',
-        costEstimate: 'Within your policy',
+        costEstimate: 'By policy',
       }] : [];
       this.onpModels = [...auto, ...offerings.map((o) => {
         const bits = [o.tier.toUpperCase(), o.nodeId];
