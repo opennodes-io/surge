@@ -21,7 +21,9 @@ pnpm test                          # hermetic verification scripts (no network, 
 pnpm --filter @surge/desktop build # the desktop app still builds
 ```
 
-CI runs the same on every pull request. If you change the UI, check it in the running app and add a screenshot to the pull request. New behavior in `@surge/core` should come with a check in one of the `packages/core/test/verify-*.ts` scripts (they use mock servers, so they stay hermetic).
+If you touch packaging or the desktop app's `dependencies`, also run `pnpm --filter @surge/desktop dist:win` on Windows. Its `afterPack` check fails the build if the installer would ship a missing or mismatched module.
+
+CI runs the checks above on every pull request. If you change the UI, check it in the running app and add a screenshot to the pull request. New behavior in `@surge/core` should come with a check in one of the `packages/core/test/verify-*.ts` scripts (they use mock servers, so they stay hermetic).
 
 ## Ground rules
 

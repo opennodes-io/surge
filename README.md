@@ -10,7 +10,7 @@
   <img src="docs/launch-kit/media/surge-browser-receipt-light.png" width="900" alt="Surge with opennodes.io open in its browser: a page tool read the site, and the answer came from an OpenNodes node chosen by the advisor, with its verified receipt shown under the reply">
 </picture>
 
-> **Pre-release.** Tested on Windows 11; macOS and Linux are untested. There are no installers yet — build from source.
+> **Pre-release.** Tested on Windows 11; macOS and Linux are untested. There are no published installers yet — build from source, or build the Windows installer yourself (below).
 
 ## What it does
 
@@ -49,6 +49,14 @@ Or build and run without the dev server:
 pnpm --filter @surge/desktop build
 pnpm --filter @surge/desktop start
 ```
+
+Or build a Windows installer (on Windows):
+
+```bash
+pnpm --filter @surge/desktop dist:win
+```
+
+That writes `apps/desktop/release/Surge-Setup-<version>.exe`, a per-user installer: no admin prompt, installs to `%LOCALAPPDATA%\Programs\surge`. It isn't code-signed yet, so Windows SmartScreen may warn about an unknown publisher. The installed app keeps its data in `%APPDATA%\Surge`; builds run from source use `%APPDATA%\Surge Dev`, so the two never share a database.
 
 On first run, the OpenNodes models need no setup: the admitted nodes are free, so they work under the default spending-off policy. For the other providers add a key in **Settings → API Keys** (Gemini and Groq have free tiers). The registry, spend policy, per-host keys and private mode live in **Settings → Advanced**; the ledger is in **Settings → Spend**.
 
