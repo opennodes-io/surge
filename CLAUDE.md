@@ -27,7 +27,7 @@ Surge is a desktop "browser for MCP" **and the reference desktop client for Open
 - The `@opennodes/core` barrel is **Node-only**. It imports `node:crypto` and `node:http`, plus `node:fs`, which reads `schema/open-node.schema.json` relative to `import.meta.url` at load. Keep it external: never bundle it, or the schema path breaks. Use it from the Electron main process only, never from the renderer or the mobile shell.
 - `engines: node >=22.5`. Electron 35 ships Node 22, so that's fine; the root `engines` still says `>=20`.
 - `OnpClient.invoke` is **non-streaming and drops tools** (it sends only `{model, messages, max_tokens}`). Don't route Surge chat through it. Instead:
-  - Use `OnpClient` for search, estimates, `resolveCard`, `checkPolicy` and receipt math.
+  - Use `OnpClient` for search, estimates and `resolveCard` (card signatures). Surge's own spend policy and WebCrypto receipt checks stay, because they're platform-agnostic.
   - Use `extractFeatures` + `recommend` (or `/v0/recommend`) for the advisor.
   - Keep the OpenAI SDK streaming path and add the 409 retry and receipt-by-URL verification there, the way `gateway.js` does.
 - Surge fetches only the top 40 text offerings, which is a thin pool for a client-side `recommend`. Prefer `/v0/recommend` with features, or fetch wider.
@@ -38,7 +38,7 @@ Surge is a desktop "browser for MCP" **and the reference desktop client for Open
 ```
 packages/core/      @surge/core — platform-agnostic TS, source-only (consumers bundle it); tsc --noEmit is the "build"
   ai/               multi-vendor LLM service (Gemini, Groq, Claude, Mistral, Ollama, vLLM, **onp**) + tool calling
-  onp/              OnpRegistryClient + ONP_DEFAULT_REGISTRY; the `onp` provider lives in ai/ai-service.ts
+  onp/              OnpRegistryClient, receipts (WebCrypto Ed25519), spend policy; the `onp` provider lives in ai/ai-service.ts
   mcp/ orchestrator/ discovery/ storage/ ui/ webmcp/ ports/
 apps/desktop/       @surge/desktop — Electron 35 (electron-vite), thin IPC bridge, WebContentsView; main-process code in src/main/services/
 apps/mobile/        @surge/mobile — Capacitor scaffold (browser features gated off; imports only @surge/core/discovery)
@@ -47,7 +47,11 @@ servers/bookmarks-history-mcp/   standalone MCP server (stdio + HTTP), tsup
 
 Commands: `pnpm install` · `pnpm typecheck` (all packages) · `pnpm dev` (desktop) · `pnpm build`.
 Verification scripts for the ONP integration:
-- `packages/core/test/verify-onp-invocation.ts`: pins, 409 re-pin/retry, price-raise surfacing, offering-mismatch and streaming, against an in-process mock registry + node; no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-onp-invocation.ts`.
+- `packages/core/test/verify-onp-invocation.ts`: 27 checks against an in-process mock registry and a mock node that signs real Ed25519 receipts; no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-onp-invocation.ts`. Covers:
+  - pins and the 409 re-pin/retry, price raises within and beyond the policy, offering-mismatch
+  - streaming, including a tool-call round
+  - receipts: verified, inflated, foreign key, wrong revision, missing
+  - every spend-policy limit
 - `packages/core/test/verify-onp.ts`: a **local** registry with the fixture Echo node. Bundle it with esbuild (externals `@google/generative-ai @libsql/client @modelcontextprotocol/sdk openai`), then run it with node.
 - `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
 
@@ -67,22 +71,41 @@ Verification scripts for the ONP integration:
   - Discovery still uses the hand-written `OnpRegistryClient`.
 - **Invocation is pinned per request and handles 409** (`AiService.createCompletion`, both `chat()` and `streamChat()`):
   - Pin headers are built from the current offering on every call. OpenAI clients are cached per node endpoint, not per offering.
-  - On a 409, Surge re-resolves the offering from the node's card (`resolveCardOffering` in `onp/onp-client.ts`).
-  - Same or lower price: re-pin and retry exactly once.
-  - Higher price (or another currency): re-pin, update the picker price, and surface the change. The user sending again is the acceptance.
+  - On a 409, Surge re-resolves the offering from the node's card (`resolveCardOffering` in `onp/onp-client.ts`), re-pins, and updates the picker price.
+  - Then it re-applies the spend policy at the new price: allowed → retry exactly once; blocked → surface the price change together with the policy reason.
   - Same revision: surfaced as offering-mismatch.
   - A re-resolved pin survives model-list refreshes while the registry still lists an older revision (compared with `Date.parse`).
   - Verified with the mock script and once against the live `demo-node.opennodes.io` using a deliberately stale pin.
   - Card signatures aren't verified yet (that comes with `@opennodes/core`); only `card.node.id` is checked.
+- **Spend policy, ONP-5 §3** (`onp/onp-policy.ts`):
+  - Covers the per-request ceiling, daily budget (UTC), price cap per MTok, allowed schemes and minimum tier.
+  - Checked in `createCompletion` before every ONP request, the 409 retry included, so a blocked call never reaches the node.
+  - The ceiling is the estimated input (~3 chars/token, tools included) plus `max_tokens`, at the pinned price.
+  - Default is **spending off**: $0 per request and $0 per day, so free offerings run and paid ones are blocked. Disputed and suspended nodes are always blocked.
+  - Stored as `onp.policy` and `onp.spend` through the settings port. `onp.*` keys don't trigger `refreshConfig`, which `ai.*` keys do.
+  - Edited in Settings → Advanced → Spend policy.
+- **Receipts, ONP-5 §5** (`onp/onp-receipts.ts`): no new dependency, because Ed25519 is verified with WebCrypto.
+  - `createCompletion` reads `ONP-Receipt` via `.withResponse()`. Inline JWS and URL receipts are both handled; a URL must be on the node's origin, with a short retry on 404.
+  - The node key comes from `/.well-known/jwks.json` (cached per origin, 10 min).
+  - Checks: node and offering, the pinned `card_revision`, currency, and `amount = usage × pinned price` within 1.5e-6, which tolerates differing rounding modes.
+  - Statuses: `verified` / `missing` / `unverified` (couldn't fetch) / `invalid`.
+  - Spend counts the verified amount, or the request ceiling when there's no verified receipt.
+  - ONP streams send `stream_options.include_usage`, so receipts carry real engine token counts instead of the node's approximation.
+  - `streamChat` reads the stream to the end before dispatching tool calls. Leaving early aborted the response and the node never settled the receipt.
+  - Each settled call is an `OnpCallRecord` that travels `streamChat` → `onOnpCall` → tool loop → IPC `ai:onpCall` → renderer. It's shown under the reply: tier · node · registry p50 · this call's duration · price · receipt status · tokens · amount.
+  - `AiService.getOnpCalls()` keeps the session's records for the future dashboard.
+  - Verified live against `demo-node.opennodes.io`, inline and by URL, both from a script and in the running app.
 - **Spec conformance gaps (open):**
-  - no receipt verification (`ONP-Receipt` is never read)
-  - no spend policy. Until one exists, "the price the user was shown" is the only policy the 409 path applies.
   - basis fields are ignored: `hardware.basis`, `context_capped_from`, `data_policy` (`auto-private` will need that last one)
+  - spend is per device. Calls the user didn't make through `AiService` (e.g. the gateway) aren't counted.
 - `OnpTier` includes `attested` / `local` / `lan`. `verified` and `attested` map to the Smart level.
 - **Bugs (open):**
   - *Single global key.* `ai.onpApiKey` is sent to every node. It has no UI yet, so it's dormant; replace it with per-host keys before adding any key UI.
   - *Plaintext keys.* Provider keys sit in plaintext in `surge-settings.json`. `SecretStorePort` (`packages/core/src/ports/secret-store-port.ts`) exists, but the desktop doesn't implement it (Electron `safeStorage`).
   - *Clipped picker (UX, pre-existing).* In the compact idle window (680×160) the model dropdown is clipped; nothing resizes the window when it opens.
+  - *Browser tool hangs with no page (pre-existing).* If a model calls `browser__getPageContent` while no page is loaded, the tool never returns and the chat stays "streaming" forever.
+  - *Empty tool-call header (pre-existing).* The IPC event `mcp:toolCall` sends `name`, but `McpToolCallBlock` reads `toolName` / `serverName`.
+  - *Heavy prompts.* The chat sends all 27 browser + bookmarks tool definitions every turn (~3.2k prompt tokens), which is slow on small CPU nodes and inflates paid ceilings.
 - No LICENSE file yet — the author's decision is open (Apache-2.0 to match the standard, or a product license). Do not add one unasked.
 - `.gitignore` covers `.claude/` and `tmpclaude-*`. `.npmrc` is benign (`node-linker=hoisted`). Never commit API keys; AI provider keys belong in the settings port / OS keychain.
 
@@ -95,7 +118,6 @@ Verification scripts for the ONP integration:
 
 ## What a good next session does
 
-1. **Receipts and policy.** Read `ONP-Receipt` via `.withResponse()`, fetch it by URL after streams, and verify JWS, amount and revision. Add a minimal spend policy (per-request ceiling + minimum tier, then a daily budget), and apply it in the 409 path too. Show tier, measured latency, price and the receipt after each call.
-2. **Swap in the published packages**, following "Using the published packages" above. This brings card signature verification into `resolveCardOffering`. Then add an "auto (advisor)" entry at the top of the model list that routes per prompt.
-3. **Per-host API keys** through `SecretStorePort` backed by `safeStorage`; retire `ai.onpApiKey`. Then a spend dashboard from receipts, and `auto-private` (local/LAN only) as a one-click privacy mode.
-4. **Launch kit.** Screenshots and a short demo for the OpenNodes launch kit (the "desktop client" section of the landing page is still a placeholder). Fix the clipped compact-mode picker first.
+1. **Swap in the published packages**, following "Using the published packages" above. This brings card signature verification into `resolveCardOffering`. Keep the WebCrypto receipt verifier (core's is Node-only). Then add an "auto (advisor)" entry at the top of the model list that routes per prompt. Mark offerings the policy would block in the picker.
+2. **Per-host API keys** through `SecretStorePort` backed by `safeStorage`; retire `ai.onpApiKey`. Then a spend dashboard from `getOnpCalls()` (persist the records), and `auto-private` (local/LAN only) as a one-click privacy mode.
+3. **Launch kit.** Screenshots and a short demo for the OpenNodes launch kit (the "desktop client" section of the landing page is still a placeholder). Fix the clipped compact-mode picker and the browser-tool hang first.

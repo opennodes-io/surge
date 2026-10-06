@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { app } from 'electron';
-import { ONP_DEFAULT_REGISTRY } from '@surge/core/onp';
+import { ONP_DEFAULT_REGISTRY, DEFAULT_ONP_POLICY, type OnpSpendPolicy } from '@surge/core/onp';
 
 export type Tier = 'free' | 'pro' | 'enterprise';
 
@@ -16,6 +16,10 @@ interface Settings {
   'ai.vllmEndpoint': string;
   'ai.vllmModel': string;
   'ai.onpRegistryUrl': string; // OpenNodes registry for model discovery
+
+  // OpenNodes spend (ONP-5): 'onp.' keys don't reset the AI clients when saved
+  'onp.policy': OnpSpendPolicy;
+  'onp.spend': { day: string; usd: number }; // today's (UTC) settled spend
 
   // License / tier
   'license.key': string;
@@ -48,6 +52,7 @@ const DEFAULTS: Partial<Settings> = {
   'ai.vllmEndpoint': '',
   'ai.vllmModel': '',
   'ai.onpRegistryUrl': ONP_DEFAULT_REGISTRY,
+  'onp.policy': DEFAULT_ONP_POLICY,
   'license.key': '',
   'license.tier': 'free',
   'mcp.maxConnections': 3,

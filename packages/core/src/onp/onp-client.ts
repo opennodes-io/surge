@@ -8,7 +8,7 @@
 export const ONP_DEFAULT_REGISTRY = 'https://registry.opennodes.io';
 
 /** Registry/node fetches can stall (captive portal, half-open connection); never let them block the UI. */
-const FETCH_TIMEOUT_MS = 8_000;
+export const ONP_FETCH_TIMEOUT_MS = 8_000;
 
 /** Registry tiers, plus the client-side `local` / `lan` tiers (your own machines, fully trusted). */
 export type OnpTier = 'attested' | 'verified' | 'community' | 'unverified' | 'disputed' | 'suspended' | 'local' | 'lan';
@@ -124,7 +124,7 @@ export class OnpRegistryClient {
     if (query.lang) p.set('lang', query.lang);
     p.set('sort', query.sort ?? 'rank');
     p.set('limit', String(query.limit ?? 50));
-    const res = await fetch(`${this.baseUrl}/v0/offerings?${p}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const res = await fetch(`${this.baseUrl}/v0/offerings?${p}`, { signal: AbortSignal.timeout(ONP_FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`ONP registry search failed: ${res.status}`);
     const body: any = await res.json();
     return (body.offerings ?? []).map(normalize);
@@ -159,7 +159,7 @@ export async function resolveCardOffering(
   offering: Pick<OnpOffering, 'endpointBase' | 'nodeId' | 'offeringId'>,
 ): Promise<{ cardRevision: string; pricing: OnpPricing } | null> {
   const origin = new URL(offering.endpointBase).origin;
-  const res = await fetch(`${origin}/.well-known/open-node.json`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const res = await fetch(`${origin}/.well-known/open-node.json`, { signal: AbortSignal.timeout(ONP_FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`ONP card fetch from ${origin} failed: ${res.status}`);
   const card: any = await res.json();
   if (card.node?.id && card.node.id !== offering.nodeId) {

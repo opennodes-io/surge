@@ -11,6 +11,9 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
+// ONP-5 §2 payment schemes (mirrors ONP_SCHEMES in @surge/core/onp)
+const ONP_SCHEMES = ['free', 'prepaid', 'x402'];
+
 const LEVEL_INFO: Record<ModelLevel, { icon: string; label: string; description: string; className: string }> = {
   quick: { icon: '\u26A1', label: 'Quick', description: 'Free, instant responses for simple questions', className: 'level-quick' },
   smart: { icon: '\uD83E\uDDE0', label: 'Smart', description: 'Great for most tasks — coding, writing, analysis', className: 'level-smart' },
@@ -32,6 +35,9 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
   const [onpRegistryUrl, setOnpRegistryUrl] = useState('');
   const [onpModelCount, setOnpModelCount] = useState(0);
   const [onpStatus, setOnpStatus] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle');
+  // OpenNodes spend policy (ONP-5); numbers are edited as text and committed on blur
+  const [policy, setPolicy] = useState({ maxRequestUsd: '0', dailyBudgetUsd: '0', maxPricePerMtok: '', minTier: 'unverified', schemes: ONP_SCHEMES });
+  const [spentToday, setSpentToday] = useState(0);
   const [tier, setTier] = useState('free');
 
   useEffect(() => {
@@ -46,13 +52,36 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
       setVllmModel(await s.get('ai.vllmModel') || '');
       setVllmApiKey(await s.get('ai.vllmApiKey') || '');
       setOnpRegistryUrl(await s.get('ai.onpRegistryUrl') || '');
+      const p = await s.get('onp.policy') || {};
+      setPolicy({
+        maxRequestUsd: String(p.maxRequestUsd ?? 0),
+        dailyBudgetUsd: String(p.dailyBudgetUsd ?? 0),
+        maxPricePerMtok: p.maxPricePerMtok == null ? '' : String(p.maxPricePerMtok),
+        minTier: p.minTier || 'unverified',
+        schemes: Array.isArray(p.schemes) ? p.schemes : ONP_SCHEMES,
+      });
+      const spend = await s.get('onp.spend');
+      setSpentToday(spend?.day === new Date().toISOString().slice(0, 10) ? Number(spend.usd) || 0 : 0);
       setTier(await s.getTier());
     };
     load();
   }, []);
 
-  const save = async (key: string, value: string) => {
+  const save = async (key: string, value: unknown) => {
     await window.surge.settings.set(key, value);
+  };
+
+  // Core re-validates the stored policy (normalizeOnpPolicy); blanks and junk fall back to safe values.
+  const savePolicy = (next: typeof policy) => {
+    setPolicy(next);
+    const usd = (v: string) => (Number(v) >= 0 ? Number(v) : 0);
+    save('onp.policy', {
+      maxRequestUsd: usd(next.maxRequestUsd),
+      dailyBudgetUsd: usd(next.dailyBudgetUsd),
+      maxPricePerMtok: next.maxPricePerMtok.trim() === '' ? null : usd(next.maxPricePerMtok),
+      minTier: next.minTier,
+      schemes: next.schemes,
+    });
   };
 
   // Test vLLM connection and discover available models
@@ -274,6 +303,48 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                   No models from this registry. Check the URL and that the registry is reachable.
                 </span>
               )}
+            </div>
+
+            <div className="api-key-group">
+              <label>Spend policy</label>
+              <span className="settings-hint">
+                Checked before every OpenNodes call. Free offerings always run; with both limits at $0, anything paid is blocked.
+                Disputed and suspended nodes are always blocked. Spent today (UTC): ${spentToday.toFixed(6)}
+              </span>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '8px', marginTop: '8px' }}>
+                {([
+                  ['maxRequestUsd', 'Per request ($)', '0'],
+                  ['dailyBudgetUsd', 'Per day ($)', '0'],
+                  ['maxPricePerMtok', 'Max price per MTok ($)', 'no cap'],
+                ] as const).map(([field, label, placeholder]) => (
+                  <label key={field} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <span className="settings-hint">{label}</span>
+                    <input className="input" inputMode="decimal" placeholder={placeholder} value={policy[field]}
+                      onChange={e => setPolicy({ ...policy, [field]: e.target.value })}
+                      onBlur={() => savePolicy(policy)} />
+                  </label>
+                ))}
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <span className="settings-hint">Minimum tier</span>
+                  <select className="input" value={policy.minTier}
+                    onChange={e => savePolicy({ ...policy, minTier: e.target.value })}>
+                    {['unverified', 'community', 'verified', 'attested'].map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div style={{ display: 'flex', gap: '16px', marginTop: '8px', alignItems: 'center' }}>
+                <span className="settings-hint">Payment schemes</span>
+                {ONP_SCHEMES.map(scheme => (
+                  <label key={scheme} style={{ display: 'flex', gap: '6px', alignItems: 'center', fontSize: 'var(--text-sm)' }}>
+                    <input type="checkbox" checked={policy.schemes.includes(scheme)}
+                      onChange={e => savePolicy({
+                        ...policy,
+                        schemes: e.target.checked ? [...policy.schemes, scheme] : policy.schemes.filter(s => s !== scheme),
+                      })} />
+                    {scheme}
+                  </label>
+                ))}
+              </div>
             </div>
 
             <h3 style={{marginTop: '24px'}}><IconCpu size={16} /> Ollama (Local)</h3>

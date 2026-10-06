@@ -3,7 +3,9 @@ import OpenAI from 'openai';
 import type { SettingsPort } from '../ports/index.js';
 import type { ToolDefinition } from '../mcp/mcp-manager.js';
 import {
-  OnpRegistryClient, ONP_DEFAULT_REGISTRY, resolveCardOffering, onpPriceRaised, formatOnpPrice, type OnpOffering,
+  OnpRegistryClient, ONP_DEFAULT_REGISTRY, resolveCardOffering, onpPriceRaised, formatOnpPrice, verifyOnpReceipt,
+  checkOnpPolicy, normalizeOnpPolicy, onpRequestCeiling,
+  type OnpOffering, type OnpTier, type OnpReceiptStatus, type OnpSpendPolicy,
 } from '../onp/index.js';
 
 export type ModelLevel = 'quick' | 'smart' | 'best';
@@ -19,17 +21,45 @@ export interface AiModel {
   costEstimate: string;    // e.g. "Free", "~$0.01/msg"
 }
 
-interface ClientForModel {
-  client: OpenAI | null;
-  modelId: string;
-  requestOptions?: OpenAI.RequestOptions; // per-request extras (ONP pin headers)
+/** One settled ONP call — what the chat shows under a reply, and what spend tracking counted. */
+export interface OnpCallRecord {
+  offering: string;              // nodeId/offeringId
+  modelName: string;
+  nodeId: string;
+  tier: OnpTier;
+  registryTtftMsP50?: number;    // registry-measured (probes), not this call
+  durationMs: number;            // this call, first request → end of response, measured by Surge
+  price: string;                 // the pinned price, formatted
+  cardRevision: string;          // the revision the call was pinned to (after any re-pin)
+  receipt: OnpReceiptStatus;
+  reason?: string;               // why the receipt is unverified/invalid
+  receiptId?: string;
+  usage?: { promptTokens: number; completionTokens: number };
+  amount?: { currency: string; value: number };
+}
+
+/** What an ONP call was pinned to, kept until its receipt is settled. */
+interface OnpCallContext {
+  offering: OnpOffering;         // as pinned for the request that succeeded
+  receiptRef: string | null;     // ONP-Receipt header: inline JWS or URL
+  ceiling: number;               // most the call could cost; counted when no verified receipt says otherwise
+  startedAt: number;
 }
 
 interface StreamCallbacks {
   onToken: (token: string) => void;
   onToolCall?: (toolCalls: PendingToolCall[]) => void;
+  onOnpCall?: (call: OnpCallRecord) => void;
   onEnd: () => void;
   onError: (error: string) => void;
+}
+
+const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
+const utcDay = () => new Date().toISOString().slice(0, 10);
+
+/** Conservative prompt-token estimate for the spend ceiling (~3 chars per token, tools included). */
+function estimateInputTokens(params: any): number {
+  return Math.ceil((JSON.stringify(params.messages ?? []).length + (params.tools ? JSON.stringify(params.tools).length : 0)) / 3);
 }
 
 // Represents a tool call the AI wants to make
@@ -81,6 +111,7 @@ export class AiService {
   private onpModels: AiModel[] = [];
   private onpClients: Map<string, OpenAI> = new Map(); // by endpoint base; pins go per request
   private onpLoadedAt = 0;
+  private onpCalls: OnpCallRecord[] = [];              // this session's settled calls (spend dashboard)
 
   constructor(settings: SettingsPort) {
     this.settings = settings;
@@ -211,7 +242,7 @@ export class AiService {
     return offering;
   }
 
-  private getOnpClient(modelKey: string): ClientForModel {
+  private getOnpClient(modelKey: string): { client: OpenAI | null; modelId: string } {
     const offering = this.getOnpOffering(modelKey);
     let client = this.onpClients.get(offering.endpointBase) ?? null;
     if (!client) {
@@ -223,7 +254,60 @@ export class AiService {
       });
       this.onpClients.set(offering.endpointBase, client);
     }
-    return { client, modelId: offering.bindingModelId, requestOptions: this.onpPinHeaders(offering) };
+    return { client, modelId: offering.bindingModelId };
+  }
+
+  getOnpPolicy(): OnpSpendPolicy {
+    return normalizeOnpPolicy(this.settings.get('onp.policy'));
+  }
+
+  /** Today's (UTC) ONP spend in USD, persisted through the settings port. */
+  getOnpSpentToday(): number {
+    const spend = this.settings.get('onp.spend');
+    return spend?.day === utcDay() ? Number(spend.usd) || 0 : 0;
+  }
+
+  /** This session's settled ONP calls, oldest first. */
+  getOnpCalls(): OnpCallRecord[] {
+    return [...this.onpCalls];
+  }
+
+  private addOnpSpend(usd: number): void {
+    if (usd > 0) this.settings.set('onp.spend', { day: utcDay(), usd: round6(this.getOnpSpentToday() + usd) });
+  }
+
+  /** ONP-5 §3: check the spend policy before an invocation; returns the request's cost ceiling. */
+  private enforceOnpPolicy(offering: OnpOffering, params: any, preface = ''): number {
+    const bounds = { estInputTokens: estimateInputTokens(params), maxTokens: params.max_tokens ?? 4096, spentTodayUsd: this.getOnpSpentToday() };
+    const blocked = checkOnpPolicy(offering, this.getOnpPolicy(), bounds);
+    if (blocked) throw new Error(`${preface}Blocked by your OpenNodes spend policy: ${blocked}. You can change it in Settings.`);
+    return onpRequestCeiling(offering, bounds);
+  }
+
+  /** Verify the call's receipt, count it against today's budget, and describe the call for the UI. */
+  private async settleOnp(ctx: OnpCallContext): Promise<OnpCallRecord> {
+    const { offering } = ctx;
+    const check = await verifyOnpReceipt(ctx.receiptRef, offering);
+    const r = check.receipt;
+    // Only a verified receipt says what the call cost; otherwise count the most the policy allowed.
+    this.addOnpSpend(check.status === 'verified' && r ? r.amount.value : ctx.ceiling);
+    const record: OnpCallRecord = {
+      offering: offering.key,
+      modelName: offering.modelName,
+      nodeId: offering.nodeId,
+      tier: offering.tier,
+      registryTtftMsP50: offering.measured.ttftMsP50,
+      durationMs: Date.now() - ctx.startedAt,
+      price: formatOnpPrice(offering.pricing),
+      cardRevision: offering.cardRevision,
+      receipt: check.status,
+      reason: check.reason,
+      receiptId: r?.receipt_id,
+      usage: r?.usage ? { promptTokens: r.usage.prompt_tokens, completionTokens: r.usage.completion_tokens } : undefined,
+      amount: r?.amount,
+    };
+    this.onpCalls.push(record);
+    return record;
   }
 
   /** ONP invocation profile: pin what we're calling and the price we saw — read fresh on every request. */
@@ -237,20 +321,25 @@ export class AiService {
   }
 
   /**
-   * chat.completions.create with ONP-4 409 handling. `price_changed` → re-resolve the offering
-   * from the node's card and retry once — automatically only when the price did not go up (until
-   * a spend policy exists, the price the user was shown is the policy); a higher price is pinned
-   * and surfaced, so sending again is the user's acceptance. `offering-mismatch` is surfaced.
+   * chat.completions.create; for ONP models, with the spend policy checked before every request
+   * and ONP-4 409 handling: re-resolve the offering from the node's card, re-apply the policy at
+   * the new price, and retry once — or surface why not. `offering-mismatch` is surfaced.
    */
-  private async createCompletion(modelKey: string, target: ClientForModel, params: any): Promise<any> {
-    const client = target.client!;
+  private async createCompletion(modelKey: string, client: OpenAI, params: any): Promise<{ data: any; onp?: OnpCallContext }> {
+    if (!modelKey.startsWith('onp:')) return { data: await client.chat.completions.create(params) };
+    const startedAt = Date.now();
+    const send = async (offering: OnpOffering, preface?: string) => {
+      const ceiling = this.enforceOnpPolicy(offering, params, preface);
+      const { data, response } = await client.chat.completions.create(params, this.onpPinHeaders(offering)).withResponse();
+      return { data, onp: { offering, receiptRef: response.headers.get('onp-receipt'), ceiling, startedAt } };
+    };
+    const offering = this.getOnpOffering(modelKey);
     try {
-      return await client.chat.completions.create(params, target.requestOptions);
+      return await send(offering);
     } catch (err: any) {
-      if (!modelKey.startsWith('onp:') || err?.status !== 409) throw err;
+      if (err?.status !== 409) throw err;
       // The SDK keeps only `{error: …}` bodies, so the node's problem+json title is lost. The card
       // decides instead: a newer revision means price_changed, the same one offering-mismatch.
-      const offering = this.getOnpOffering(modelKey);
       const fresh = await resolveCardOffering(offering);
       if (!fresh) throw new Error(`${offering.nodeId} no longer offers ${offering.offeringId}. Refresh models.`);
       if (fresh.cardRevision === offering.cardRevision) {
@@ -260,12 +349,11 @@ export class AiService {
       this.onpOfferings.set(offering.key, repinned);
       const model = this.onpModels.find((m) => m.id === modelKey);
       if (model) model.costEstimate = formatOnpPrice(fresh.pricing);
-      if (onpPriceRaised(offering.pricing, fresh.pricing)) {
-        throw new Error(`${offering.modelName} on ${offering.nodeId} changed price from ${formatOnpPrice(offering.pricing)} `
-          + `to ${formatOnpPrice(fresh.pricing)}. Send again to accept the new price.`);
-      }
+      const preface = onpPriceRaised(offering.pricing, fresh.pricing)
+        ? `${offering.modelName} on ${offering.nodeId} changed price from ${formatOnpPrice(offering.pricing)} to ${formatOnpPrice(fresh.pricing)}. `
+        : '';
       try {
-        return await client.chat.completions.create(params, this.onpPinHeaders(repinned));
+        return await send(repinned, preface);
       } catch (retryErr: any) {
         if (retryErr?.status !== 409) throw retryErr;
         throw new Error(`${offering.nodeId} rejected the re-resolved pin for ${offering.key} (revision ${fresh.cardRevision}).`);
@@ -296,7 +384,7 @@ export class AiService {
     }
   }
 
-  private getClientForModel(modelKey: string): ClientForModel {
+  private getClientForModel(modelKey: string): { client: OpenAI | null; modelId: string } {
     if (modelKey.startsWith('onp:')) return this.getOnpClient(modelKey);
     const modelId = this.getModelId(modelKey);
     switch (modelKey) {
@@ -316,13 +404,12 @@ export class AiService {
       return this.chatGemini(messages, modelKey);
     }
 
-    const target = this.getClientForModel(modelKey);
-    const { client, modelId } = target;
+    const { client, modelId } = this.getClientForModel(modelKey);
     if (!client) {
       throw new Error(`No client configured for model: ${modelKey}. Please set the API key in Settings.`);
     }
 
-    const response = await this.createCompletion(modelKey, target, {
+    const { data: response, onp } = await this.createCompletion(modelKey, client, {
       model: modelId,
       messages: messages.map((m: any) => ({
         role: m.role,
@@ -335,6 +422,7 @@ export class AiService {
     return {
       content: response.choices[0]?.message?.content || '',
       model: modelId,
+      ...(onp ? { onp: await this.settleOnp(onp) } : {}),
     };
   }
 
@@ -364,8 +452,7 @@ export class AiService {
         return this.streamGemini(augmentedMessages, modelKey, callbacks, tools);
       }
 
-      const target = this.getClientForModel(modelKey);
-      const { client, modelId } = target;
+      const { client, modelId } = this.getClientForModel(modelKey);
       if (!client) {
         throw new Error(`No client configured for model: ${modelKey}. Please set the API key in Settings.`);
       }
@@ -391,11 +478,16 @@ export class AiService {
         params.tool_choice = 'auto';
       }
 
+      // ONP nodes forward the body to their engine: asking for the terminal usage chunk gets
+      // real token counts into the receipt instead of the node's approximation (ONP-4 §2).
+      if (modelKey.startsWith('onp:')) params.stream_options = { include_usage: true };
+
       let stream: any;
+      let onp: OnpCallContext | undefined;
       let usePromptBasedTools = false;
 
       try {
-        stream = await this.createCompletion(modelKey, target, params);
+        ({ data: stream, onp } = await this.createCompletion(modelKey, client, params));
       } catch (err: any) {
         // For vLLM/local models that don't support native tool calling,
         // fall back to prompt-based tool calling
@@ -476,37 +568,17 @@ export class AiService {
             if (tc.function?.arguments) pending.args += tc.function.arguments;
           }
         }
-
-        // Check for tool calls on any finish_reason (some providers use 'stop' even with tool calls)
-        if (choice.finish_reason && pendingToolCalls.size > 0) {
-          const toolCalls: PendingToolCall[] = [];
-          for (const [, tc] of pendingToolCalls) {
-            if (!tc.name) continue; // Skip incomplete tool calls
-            let parsedArgs: Record<string, any> = {};
-            try {
-              parsedArgs = JSON.parse(tc.args || '{}');
-            } catch {
-              parsedArgs = {};
-            }
-            toolCalls.push({
-              id: tc.id,
-              functionName: tc.name,
-              arguments: parsedArgs,
-            });
-          }
-          if (toolCalls.length > 0) {
-            callbacks.onToolCall?.(toolCalls);
-            return; // Don't call onEnd — orchestrator will continue
-          }
-        }
       }
 
-      // Also check for any remaining tool calls after stream ends
-      // (some providers don't set finish_reason on the last chunk)
+      // The stream is read to its end before tool calls are dispatched: leaving early aborts the
+      // response before the terminal usage chunk, and an ONP node settles its receipt only then.
+      if (onp) callbacks.onOnpCall?.(await this.settleOnp(onp));
+
+      // Dispatch tool calls (finish_reason varies: some providers use 'stop', some omit it)
       if (pendingToolCalls.size > 0) {
         const toolCalls: PendingToolCall[] = [];
         for (const [, tc] of pendingToolCalls) {
-          if (!tc.name) continue;
+          if (!tc.name) continue; // Skip incomplete tool calls
           let parsedArgs: Record<string, any> = {};
           try {
             parsedArgs = JSON.parse(tc.args || '{}');

@@ -114,6 +114,7 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
               durationMs: i.durationMs,
               args: i.args,
             }),
+          onOnpCall: (call) => sender.send('ai:onpCall', call),
           onEnd: () => sender.send('ai:streamEnd'),
           onError: (msg) => sender.send('ai:streamError', msg),
         },
