@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import SearchBar from './components/SearchBar';
 import ChatPanel from './components/ChatPanel';
 import ServerPanel from './components/ServerPanel';
@@ -7,6 +7,7 @@ import WebBrowserBar from './components/WebBrowserBar';
 import McpWebPanel from './components/McpWebPanel';
 import AgentApprovalModal from './components/AgentApprovalModal';
 import { IconStar, IconBolt, IconGlobe, IconSettings, IconMinus, IconX, IconMaximize, IconRestore } from './components/Icons';
+import { PRIVATE_AUTO_MODEL } from './types';
 import type { AppMode, ChatMessage, AiModel, OnpCall, McpWebCapabilities, McpWebConnectResult, McpBDetectResult, WebAgentSpec } from './types';
 import type { ToolCallData } from './components/McpToolCallBlock';
 import './styles/app.css';
@@ -18,6 +19,9 @@ const App: React.FC = () => {
   const [streamContent, setStreamContent] = useState('');
   const [selectedModel, setSelectedModel] = useState('gemini-flash-lite');
   const [models, setModels] = useState<AiModel[]>([]);
+  // Private mode: only local/LAN models answer; the model in use before it was turned on comes back after
+  const [privateMode, setPrivateMode] = useState(false);
+  const modelBeforePrivate = useRef('gemini-flash-lite');
   const [showServers, setShowServers] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
@@ -41,6 +45,10 @@ const App: React.FC = () => {
 
   useEffect(() => {
     window.surge?.ai?.getModels?.().then(setModels).catch(() => {});
+    window.surge?.private?.status?.().then((st) => {
+      setPrivateMode(st.enabled);
+      if (st.enabled) setSelectedModel(PRIVATE_AUTO_MODEL);
+    }).catch(() => {});
     // Load saved theme
     window.surge?.settings?.get('ui.theme').then((theme: string) => {
       if (theme === 'light') {
@@ -259,6 +267,19 @@ const App: React.FC = () => {
     return () => window.removeEventListener('surge:prompt', onPrompt as EventListener);
   }, [handleSubmit]);
 
+  const togglePrivate = useCallback(async () => {
+    const turningOn = !privateMode;
+    if (turningOn) modelBeforePrivate.current = selectedModel;
+    const status = await window.surge.private.setEnabled(turningOn);
+    setPrivateMode(status.enabled);
+    setModels(await window.surge.ai.getModels());
+    setSelectedModel(status.enabled ? PRIVATE_AUTO_MODEL : modelBeforePrivate.current);
+    if (status.error) {
+      setMode('chat');
+      setMessages(msgs => [...msgs, { role: 'assistant', content: status.error! }]);
+    }
+  }, [privateMode, selectedModel]);
+
   const handleNewChat = useCallback(() => {
     // Disconnect MCPWeb if connected
     if (mcpWebServerId) {
@@ -415,6 +436,8 @@ const App: React.FC = () => {
                 selectedModel={selectedModel}
                 models={models}
                 onSelectModel={setSelectedModel}
+                privateMode={privateMode}
+                onTogglePrivate={togglePrivate}
               />
             </div>
 

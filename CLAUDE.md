@@ -43,6 +43,11 @@ Both are dependencies of `@surge/core` **and** `apps/desktop`; the desktop entry
 - **No timeouts in `OnpClient`.** Its fetches take no `AbortSignal`, so `onp-client.ts` races each call against an 8s timeout and the request finishes in the background.
 - **Don't route chat through `OnpClient.invoke`.** It doesn't stream and drops tools (it sends only `{model, messages, max_tokens}`).
 
+**`@opennodes/ollama-router` 0.1.2** is a desktop-only dependency (it starts an HTTP server, so it never goes in core).
+- Private mode starts it in the main process (`apps/desktop/src/main/services/private-router.ts`) on a free loopback port with `registry: null`, so only the local Ollama and LAN peers are served.
+- mDNS LAN discovery is off unless `private.mdns` is set, because binding UDP 5353 can trigger a Windows firewall prompt.
+- Types live in `apps/desktop/src/main/services/ollama-router.d.ts`.
+
 **Upstream feedback** (to file on opennodes-io/opennodes)
 - `OnpClient` methods should accept an `AbortSignal`.
 - Ship `.d.ts` files.
@@ -57,6 +62,7 @@ packages/core/      @surge/core — platform-agnostic TS, source-only (consumers
   onp/              offerings model, registry client (@opennodes/cli), advisor (@opennodes/core), receipts (WebCrypto Ed25519), spend policy; the `onp` provider lives in ai/ai-service.ts
   mcp/ orchestrator/ discovery/ storage/ ui/ webmcp/ ports/
 apps/desktop/       @surge/desktop — Electron 35 (electron-vite), thin IPC bridge, WebContentsView; main-process code in src/main/services/
+                    (secret-store.ts = safeStorage keychain, private-router.ts = embedded ollama-router)
 apps/mobile/        @surge/mobile — Capacitor scaffold (browser features gated off; imports only @surge/core/discovery)
 servers/bookmarks-history-mcp/   standalone MCP server (stdio + HTTP), tsup
 ```
@@ -69,6 +75,10 @@ Verification scripts for the ONP integration:
   - receipts: verified, inflated, foreign key, wrong revision, missing
   - every spend-policy limit
   - tampered-card rejection, and Auto routing with fallback
+- `packages/core/test/verify-keys-spend-private.ts`: 21 checks with mock registry, nodes and Ollama, plus the real `@opennodes/ollama-router`; no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-keys-spend-private.ts`. Covers:
+  - per-host keys: sent only to their host; unlock imported offerings; join Auto; forgotten on delete
+  - the spend ledger: persistence and the by-day / by-node summary
+  - private mode: local models only (auto-private too), everything else refused, zero registry requests
 - `packages/core/test/verify-onp.ts`: a **local** registry with the fixture Echo node. Bundle it with esbuild (externals `@google/generative-ai @libsql/client @modelcontextprotocol/sdk openai`), then run it with node.
 - `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
 
@@ -117,15 +127,37 @@ Verification scripts for the ONP integration:
   - ONP streams send `stream_options.include_usage`, so receipts carry real engine token counts instead of the node's approximation.
   - `streamChat` reads the stream to the end before dispatching tool calls. Leaving early aborted the response and the node never settled the receipt.
   - Each settled call is an `OnpCallRecord` that travels `streamChat` → `onOnpCall` → tool loop → IPC `ai:onpCall` → renderer. It's shown under the reply: tier · node · registry p50 · this call's duration · price · receipt status · tokens · amount.
-  - `AiService.getOnpCalls()` keeps the session's records for the future dashboard.
+  - `AiService.getOnpCalls()` keeps the session's records. `onOnpCallSettled` notifies listeners; the desktop persists every call to the `onp_calls` table.
+- **Spend dashboard** (Settings → Spend, `SpendDashboard.tsx`), reading `onp:spend` (`SurgeStore.onpCalls.summary` / `list`):
+  - Tiles: today vs the daily budget (with a meter), last-14-days total, and receipts verified.
+  - A calls-per-day column chart (UTC) with spend in the tooltip, since most calls are free.
+  - Tables: by node, and recent calls.
+  - Chart colors come from the dataviz validator: `#0ea5c6` on dark, `#0891b2` on light. The app's `#06b6d4` fails the dark lightness band.
+- **API keys in the OS keychain** (`SecretStore`: Electron `safeStorage`/DPAPI, ciphertext in `<userData>/surge-secrets.json`):
+  - **Provider keys** (Gemini, Groq, Claude, Mistral, vLLM; `SECRET_SETTINGS` in `settings-service.ts`) keep their settings names, but `SettingsService` serves them from the keychain.
+    - Plaintext values are migrated on first start and removed from `surge-settings.json`.
+    - `settings:get` never returns them; the renderer gets only `settings:secrets` (which are saved).
+    - Settings fields are write-only (`SecretField`). vLLM model discovery runs in main (`ai:listVllmModels`) so the saved key is used there.
+    - Without a real keychain (Linux `basic_text`), provider keys stay in the settings file, and per-host keys can't be saved at all.
+  - **Per-host OpenNodes keys:** `onp.key.<hostname>` in the store via `SecretStorePort` (`AiService` constructor arg; `listSecrets` lists names only).
+    - Each key is sent only to endpoints on exactly that hostname. It makes the host's imported offerings usable (marked "your key") and adds them to the Auto pool.
+    - Managed in Settings → Advanced → API keys by host, with host suggestions from listed imported catalogs.
+    - `ai.onpApiKey` is retired: no longer read, only migrated out of plaintext.
+- **Private mode** (one click: the lock beside the model picker):
+  - `private.enabled` starts the embedded ollama-router. `AiService.setPrivateRouter(origin)` then lists only `private:*` models from its `/router/catalog` (local and LAN tiers), led by `private:auto-private`, the router's advisor restricted to local and LAN.
+  - Every other model is refused, and the registry isn't contacted while private mode is on.
+  - The previous model is restored when private mode is turned off. Private mode is restored at startup.
+  - Static LAN peers and opt-in mDNS are set in Settings → Advanced → Private mode.
+  - Scope: model calls only. Connected MCP servers and opened pages are not restricted, and the Settings text says so.
+  - Verified in the app against the real local Ollama: `gemma4`, `gemma3:12b` and `llama3.2` were listed, and a tool turn was answered through `auto-private`.
   - Verified live against `demo-node.opennodes.io`, inline and by URL, both from a script and in the running app.
 - **Spec conformance gaps (open):**
   - basis fields are ignored: `hardware.basis`, `context_capped_from`, `data_policy` (`auto-private` will need that last one)
   - spend is per device. Calls the user didn't make through `AiService` (e.g. the gateway) aren't counted.
 - `OnpTier` includes `attested` / `local` / `lan`. `verified` and `attested` map to the Smart level.
 - **Bugs (open):**
-  - *Single global key.* `ai.onpApiKey` is sent to every node. It has no UI yet, so it's dormant; replace it with per-host keys before adding any key UI.
-  - *Plaintext keys.* Provider keys sit in plaintext in `surge-settings.json`. `SecretStorePort` (`packages/core/src/ports/secret-store-port.ts`) exists, but the desktop doesn't implement it (Electron `safeStorage`).
+  - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
+  - *Private mode with tools.* Local models without tool support fail through the router: Surge's prompt-based tool fallback only triggers for `vllm-custom` / `ollama-local`.
   - *Clipped picker (UX, pre-existing).* In the compact idle window (680×160) the model dropdown is clipped; nothing resizes the window when it opens.
   - *Browser tool hangs with no page (pre-existing).* If a model calls `browser__getPageContent` while no page is loaded, the tool never returns and the chat stays "streaming" forever.
   - *Empty tool-call header (pre-existing).* The IPC event `mcp:toolCall` sends `name`, but `McpToolCallBlock` reads `toolName` / `serverName`.
@@ -142,5 +174,8 @@ Verification scripts for the ONP integration:
 
 ## What a good next session does
 
-1. **Per-host API keys** through `SecretStorePort` backed by `safeStorage`; retire `ai.onpApiKey`. Then a spend dashboard from `getOnpCalls()` (persist the records), and `auto-private` (local/LAN only) as a one-click privacy mode: the advisor's `prefer_local` / `preset: 'private'` plus the local and LAN tiers. Once keys exist, widen the Auto pool beyond admitted nodes to imported listings the user has keys for.
-2. **Launch kit.** Screenshots and a short demo for the OpenNodes launch kit (the "desktop client" section of the landing page is still a placeholder). Fix the clipped compact-mode picker and the browser-tool hang first.
+1. **Launch kit.** Screenshots and a short demo for the OpenNodes launch kit (the "desktop client" section of the landing page is still a placeholder). Fix the clipped compact-mode picker and the browser-tool hang first.
+2. **Follow-ups:**
+   - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
+   - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
+   - Add a mobile subpath for the platform-agnostic `onp/` modules.

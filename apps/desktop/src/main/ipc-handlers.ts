@@ -1,4 +1,4 @@
-import { ipcMain, shell, type WebContentsView } from 'electron';
+import { app, ipcMain, shell, type WebContentsView } from 'electron';
 import {
   AiService,
   McpManager,
@@ -9,7 +9,10 @@ import {
   type PendingToolCall,
   type ToolExecutionResult,
 } from '@surge/core';
-import { SettingsService } from './services/settings-service';
+import { SettingsService, SECRET_SETTINGS } from './services/settings-service';
+import { SecretStore } from './services/secret-store';
+import { getStore } from './services/store';
+import { startPrivateRouter, stopPrivateRouter, privateRouterStatus } from './services/private-router';
 import { BrowserService } from './services/browser-service';
 import { registerLocalDataHandlers } from './services/local-data';
 import { registerAgentHandlers } from './services/agents';
@@ -25,8 +28,20 @@ let browserService: BrowserService;
 const MAX_TOOL_CALL_ROUNDS = 10;
 
 export function registerIpcHandlers(getBrowserView: () => WebContentsView | null): void {
-  settingsService = new SettingsService();
-  aiService = new AiService(settingsService);
+  const secretStore = new SecretStore();
+  settingsService = new SettingsService(secretStore);
+  aiService = new AiService(settingsService, secretStore);
+  // Spend ledger: every settled OpenNodes call is persisted for the dashboard (best effort).
+  aiService.onOnpCallSettled((call) => {
+    getStore()
+      .then((store) => store.onpCalls.record({
+        at: call.at, offering: call.offering, nodeId: call.nodeId, modelName: call.modelName, tier: call.tier,
+        price: call.price, cardRevision: call.cardRevision, receipt: call.receipt, receiptId: call.receiptId ?? null,
+        reason: call.reason ?? null, promptTokens: call.usage?.promptTokens ?? null, completionTokens: call.usage?.completionTokens ?? null,
+        amount: call.amount ?? null, countedUsd: call.countedUsd, durationMs: call.durationMs, advisor: call.advisor ?? null,
+      }))
+      .catch((err) => console.error('[onp] could not record the call:', err?.message ?? err));
+  });
   mcpManager = new McpManager(settingsService);
   searchService = new SearchService(mcpManager);
   mcpWebDetector = new McpWebDetector();
@@ -222,7 +237,14 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   });
 
   // ── Settings Handlers ──────────────────────────────────
-  ipcMain.handle('settings:get', async (_event, key: string) => settingsService.get(key));
+  // API keys are write-only from the renderer: it can save or remove them, never read them back.
+  ipcMain.handle('settings:get', async (_event, key: string) =>
+    SECRET_SETTINGS.includes(key) ? null : settingsService.get(key));
+
+  ipcMain.handle('settings:secrets', async () => ({
+    encrypted: settingsService.secretsEncrypted(),
+    saved: Object.fromEntries(SECRET_SETTINGS.map((key) => [key, settingsService.hasSecret(key)])),
+  }));
 
   ipcMain.handle('settings:set', async (_event, key: string, value: any) => {
     settingsService.set(key, value);
@@ -233,4 +255,94 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   });
 
   ipcMain.handle('settings:getTier', async () => settingsService.getTier());
+
+  // vLLM model discovery runs here so a saved key can be used without exposing it to the renderer.
+  ipcMain.handle('ai:listVllmModels', async (_event, endpoint: string) => {
+    let base = String(endpoint || '').trim().replace(/\/+$/, '');
+    if (!base.endsWith('/v1')) base += '/v1';
+    const key = settingsService.get('ai.vllmApiKey');
+    try {
+      const res = await fetch(`${base}/models`, { headers: key ? { authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return { error: `HTTP ${res.status}` };
+      const body: any = await res.json();
+      return { models: (body.data || []).map((m: any) => m.id) };
+    } catch (err: any) {
+      return { error: err.message };
+    }
+  });
+
+  // ── Private mode: model calls only to this machine's Ollama and LAN peers (embedded ollama-router) ──
+  const privateStatus = () => ({ enabled: aiService.isPrivateMode(), ...privateRouterStatus(settingsService) });
+
+  ipcMain.handle('private:status', async () => privateStatus());
+
+  ipcMain.handle('private:setEnabled', async (_event, enabled: boolean) => {
+    try {
+      if (enabled) aiService.setPrivateRouter(await startPrivateRouter(settingsService));
+      settingsService.set('private.enabled', !!enabled);
+      if (!enabled) {
+        aiService.setPrivateRouter(null);
+        await stopPrivateRouter();
+      }
+      return privateStatus();
+    } catch (err: any) {
+      return { ...privateStatus(), error: `Could not start private mode: ${err.message}` };
+    }
+  });
+
+  // Peers, mDNS and the Ollama host are read at start, so a running router restarts to apply them.
+  ipcMain.handle('private:configure', async (_event, cfg: { peers?: string[]; mdns?: boolean }) => {
+    if (cfg.peers) settingsService.set('private.peers', cfg.peers.map((p) => p.trim()).filter(Boolean));
+    if (cfg.mdns !== undefined) settingsService.set('private.mdns', !!cfg.mdns);
+    if (privateRouterStatus(settingsService).running) {
+      await stopPrivateRouter();
+      try {
+        aiService.setPrivateRouter(await startPrivateRouter(settingsService));
+      } catch (err: any) {
+        aiService.setPrivateRouter(null);
+        return { ...privateStatus(), error: `Could not restart private mode: ${err.message}` };
+      }
+    }
+    return privateStatus();
+  });
+
+  // Private mode survives restarts: bring the router back if it was on.
+  if (aiService.isPrivateMode()) {
+    startPrivateRouter(settingsService)
+      .then((origin) => aiService.setPrivateRouter(origin))
+      .catch((err) => console.error('[private] router did not start:', err?.message ?? err));
+  }
+  app.on('will-quit', () => { stopPrivateRouter().catch(() => {}); });
+
+  // ── OpenNodes spend dashboard ──
+  ipcMain.handle('onp:spend', async () => {
+    const store = await getStore();
+    return {
+      policy: aiService.getOnpPolicy(),
+      todayUsd: aiService.getOnpSpentToday(),
+      summary: await store.onpCalls.summary({ days: 14 }),
+      recent: await store.onpCalls.list({ limit: 50 }),
+    };
+  });
+
+  // ── OpenNodes per-host API keys (OS keychain; each key is sent only to its own host) ──
+  ipcMain.handle('onpKeys:list', async () => ({
+    encrypted: settingsService.secretsEncrypted(),
+    hosts: await aiService.getOnpKeyHosts(),
+    suggestions: aiService.getOnpKeyHostSuggestions(),
+  }));
+
+  ipcMain.handle('onpKeys:set', async (_event, host: string, key: string) => {
+    try {
+      await aiService.setOnpKey(host, key);
+      return { success: true };
+    } catch (err: any) {
+      return { error: err.message };
+    }
+  });
+
+  ipcMain.handle('onpKeys:delete', async (_event, host: string) => {
+    await aiService.deleteOnpKey(host);
+    return { success: true };
+  });
 }

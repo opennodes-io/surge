@@ -279,3 +279,19 @@
   font-family: var(--font-mono);
   font-size: 10px;
 }
+
+/* Private-mode toggle beside the model selector */
+.private-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.private-btn.active {
+  color: var(--accent-green);
+  border: 1px solid var(--accent-green-glow);
+  background: var(--accent-green-glow);
+}
+.private-label { font-weight: 600; }

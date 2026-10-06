@@ -1,0 +1,91 @@
+/* ── Spend dashboard (Settings → Spend) ──────────────── */
+
+/* Single-series chart hue, validated per theme against the panel surface (dataviz validator). */
+.spend-dashboard {
+  --sd-series: #0ea5c6;
+  --sd-track: rgba(14, 165, 198, 0.18);
+}
+[data-theme="light"] .spend-dashboard {
+  --sd-series: #0891b2;
+  --sd-track: rgba(8, 145, 178, 0.16);
+}
+
+.sd-head { display: flex; align-items: center; justify-content: space-between; }
+.sd-head h3 { margin: 0; }
+.sd-subhead { margin: var(--space-lg) 0 var(--space-sm); font-size: var(--text-sm); color: var(--text-secondary); font-weight: 600; }
+
+.sd-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--space-sm);
+  margin: var(--space-md) 0;
+}
+.sd-tile {
+  padding: var(--space-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-glass);
+}
+.sd-tile-label { font-size: var(--text-xs); color: var(--text-secondary); }
+.sd-tile-value { font-size: var(--text-xl); font-weight: 600; color: var(--text-primary); margin-top: 2px; }
+.sd-tile-note { font-size: var(--text-xs); color: var(--text-muted); margin-top: 6px; }
+
+/* Meter: the fill carries severity; the track is a lighter step of the same hue. */
+.sd-meter { height: 6px; border-radius: var(--radius-full); background: var(--sd-track); margin-top: 8px; overflow: hidden; }
+.sd-meter > div { height: 100%; border-radius: var(--radius-full); background: var(--sd-series); }
+.sd-meter.warning > div { background: var(--accent-orange); }
+.sd-meter.danger > div { background: var(--accent-red); }
+
+/* Column chart: ≤24px columns, 4px rounded data-end, square at a hairline baseline. */
+.sd-chart { margin: 0; }
+.sd-chart-title { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-sm); }
+.sd-plot {
+  display: flex;
+  align-items: flex-end;
+  height: 120px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-top: 18px; /* room for the peak label */
+}
+.sd-slot {
+  position: relative;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  outline: none;
+  cursor: default;
+}
+.sd-slot:hover, .sd-slot:focus-visible { background: var(--sd-track); border-radius: 4px 4px 0 0; }
+.sd-col { width: min(24px, 70%); min-height: 0; background: var(--sd-series); border-radius: 4px 4px 0 0; }
+.sd-cap { font-size: var(--text-xs); color: var(--text-secondary); font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+.sd-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  padding: 4px 8px;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.3));
+  z-index: 2;
+  pointer-events: none;
+}
+.sd-axis { display: flex; justify-content: space-between; font-size: var(--text-xs); color: var(--text-muted); margin-top: 4px; }
+
+.sd-table { width: 100%; border-collapse: collapse; font-size: var(--text-xs); color: var(--text-primary); }
+.sd-table th { text-align: left; font-weight: 600; color: var(--text-secondary); padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); }
+.sd-table td { padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); vertical-align: top; }
+.sd-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.sd-table code { font-size: var(--text-xs); }
+
+/* Receipt status: icon + label, never color alone. */
+.sd-receipt { white-space: nowrap; }
+.sd-receipt.verified { color: var(--accent-green); }
+.sd-receipt.missing, .sd-receipt.unverified { color: var(--accent-orange); }
+.sd-receipt.invalid { color: var(--accent-red); }

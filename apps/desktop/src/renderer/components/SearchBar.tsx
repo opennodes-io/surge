@@ -10,6 +10,8 @@ interface SearchBarProps {
   selectedModel: string;
   models: AiModel[];
   onSelectModel: (id: string) => void;
+  privateMode: boolean;
+  onTogglePrivate: () => void;
 }
 
 // Level metadata for the Quick/Smart/Best UI
@@ -26,6 +28,8 @@ const SearchBar: React.FC<SearchBarProps> = ({
   selectedModel,
   models,
   onSelectModel,
+  privateMode,
+  onTogglePrivate,
 }) => {
   const [query, setQuery] = useState('');
   const [showModels, setShowModels] = useState(false);
@@ -91,6 +95,19 @@ const SearchBar: React.FC<SearchBarProps> = ({
           disabled={isStreaming}
           autoFocus
         />
+
+        {/* One-click private mode: only models on this machine and the LAN answer */}
+        <button
+          className={`private-btn btn-ghost btn-sm no-drag ${privateMode ? 'active' : ''}`}
+          onClick={onTogglePrivate}
+          aria-pressed={privateMode}
+          title={privateMode
+            ? 'Private mode is on: only models on your machines answer. Click to turn it off.'
+            : 'Private mode: answer only with models on your own machines (local Ollama and LAN)'}
+        >
+          <span aria-hidden="true">{privateMode ? '\uD83D\uDD12' : '\uD83D\uDD13'}</span>
+          {privateMode && <span className="private-label">Private</span>}
+        </button>
 
         {/* Model selector — shows Quick/Smart/Best with real model name */}
         <div className="model-selector no-drag" ref={dropdownRef}>

@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('surge', {
       return () => ipcRenderer.removeListener('ai:onpCall', handler);
     },
     getModels: () => ipcRenderer.invoke('ai:getModels'),
+    listVllmModels: (endpoint: string) => ipcRenderer.invoke('ai:listVllmModels', endpoint),
   },
 
   // MCP server management
@@ -137,5 +138,25 @@ contextBridge.exposeInMainWorld('surge', {
     get: (key: string) => ipcRenderer.invoke('settings:get', key),
     set: (key: string, value: any) => ipcRenderer.invoke('settings:set', key, value),
     getTier: () => ipcRenderer.invoke('settings:getTier'),
+    secrets: () => ipcRenderer.invoke('settings:secrets'),
+  },
+
+  // Private mode (local Ollama + LAN only, via the embedded ollama-router)
+  private: {
+    status: () => ipcRenderer.invoke('private:status'),
+    setEnabled: (enabled: boolean) => ipcRenderer.invoke('private:setEnabled', enabled),
+    configure: (cfg: { peers?: string[]; mdns?: boolean }) => ipcRenderer.invoke('private:configure', cfg),
+  },
+
+  // OpenNodes spend ledger (persisted settled calls)
+  onp: {
+    spend: () => ipcRenderer.invoke('onp:spend'),
+  },
+
+  // OpenNodes per-host API keys: write-only; listing returns host names, never keys
+  onpKeys: {
+    list: () => ipcRenderer.invoke('onpKeys:list'),
+    set: (host: string, key: string) => ipcRenderer.invoke('onpKeys:set', host, key),
+    remove: (host: string) => ipcRenderer.invoke('onpKeys:delete', host),
   },
 });

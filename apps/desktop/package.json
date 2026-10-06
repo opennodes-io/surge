@@ -16,6 +16,7 @@
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@opennodes/cli": "^0.1.2",
     "@opennodes/core": "^0.1.1",
+    "@opennodes/ollama-router": "^0.1.2",
     "@surge/core": "workspace:*",
     "openai": "^4.80.0",
     "react": "^19.0.0",
