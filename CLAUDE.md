@@ -63,11 +63,12 @@ packages/core/      @surge/core — platform-agnostic TS, source-only (consumers
   mcp/ orchestrator/ discovery/ storage/ ui/ webmcp/ ports/
 apps/desktop/       @surge/desktop — Electron 35 (electron-vite), thin IPC bridge, WebContentsView; main-process code in src/main/services/
                     (secret-store.ts = safeStorage keychain, private-router.ts = embedded ollama-router)
+                    electron-builder.yml + packaging/ (icon source, afterPack check) + resources/ (runtime icons) = the Windows installer
 apps/mobile/        @surge/mobile — Capacitor scaffold (browser features gated off; imports only @surge/core/discovery)
 servers/bookmarks-history-mcp/   standalone MCP server (stdio + HTTP), tsup
 ```
 
-Commands: `pnpm install` · `pnpm typecheck` (all packages) · `pnpm test` (all hermetic verification scripts, via `scripts/test.mjs`) · `pnpm dev` (desktop) · `pnpm build`.
+Commands: `pnpm install` · `pnpm typecheck` (all packages) · `pnpm test` (all hermetic verification scripts, via `scripts/test.mjs`) · `pnpm dev` (desktop) · `pnpm build` · `pnpm --filter @surge/desktop dist:win` (Windows installer into `apps/desktop/release/`).
 CI (`.github/workflows/ci.yml`, ubuntu) runs install `--frozen-lockfile`, typecheck, `pnpm test`, and the desktop and server builds on every push to `main` and every PR.
 Verification scripts for the ONP integration:
 - `packages/core/test/verify-onp-invocation.ts`: 38 checks against an in-process mock registry, an offline "admitted" node, and a mock node that serves a schema-valid signed card and signs real Ed25519 receipts; no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-onp-invocation.ts`. Covers:
@@ -88,6 +89,8 @@ Verification scripts for the ONP integration:
 - On an error, the SDK keeps only an `{error: …}` body, so a node's problem+json `title` (`price_changed` / `offering-mismatch`) never reaches `err.error`. After a 409, Surge re-fetches the card: a newer revision means price_changed, the same revision means offering-mismatch.
 
 **Driving the real app** (no Playwright in the repo): run `pnpm --filter @surge/desktop build`. Then from `apps/desktop` run `electron . --remote-debugging-port=9333 --user-data-dir=<tmp dir>`. Drive the renderer page (`…/renderer/index.html`) over CDP: `Runtime.evaluate` and `Page.captureScreenshot`; Node 24 has a global `WebSocket`. `--user-data-dir` keeps the user's real `surge-settings.json` and `surge.db` untouched. Call `window.surge.window.resize('expanded')` before screenshotting dropdowns.
+- The packaged app drives the same way (`release/win-unpacked/Surge.exe --remote-debugging-port=… --user-data-dir=…`). Add `--inspect=<port>` to reach its main process, where `process.mainModule.require(...)` works.
+- **Test the installed copy, not `win-unpacked`, for module problems.** `win-unpacked` sits inside the repo, so Node's lookup walks up into the repo's `node_modules` and hides modules missing from `app.asar`. A per-user install is `Surge-Setup-*.exe /S`; uninstall with `"%LOCALAPPDATA%ProgramssurgeUninstall Surge.exe" /currentuser /S`. Both are silent, and user data is kept.
 
 ## Known state (2026-10-07)
 
@@ -173,6 +176,15 @@ Verification scripts for the ONP integration:
     - Screencast frames lag behind acks while animations play. Place them by their render timestamp, shifted onto `Date.now()` by the smallest delivery delay, and drain the backlog before stopping.
     - Make the GIF from the MP4: fed the variable-duration concat directly, ffmpeg played every hold too short.
     - Park a synthetic pointer (`Input.dispatchMouseEvent`) before scenes, because the real pointer's hover state leaks into frames.
+- **Windows installer** (electron-builder 26, NSIS; `apps/desktop/electron-builder.yml`), built and verified 2026-10-07. Not committed, signed or published yet.
+  - Identity: product name "Surge", version 0.1.0, appId `io.opennodes.surge`. One-click per-user install into `%LOCALAPPDATA%Programssurge`, which comes from `extraMetadata.name`; otherwise the folder name comes from `@surge/desktop`. 88 MB. `publish: null`, so releases are never uploaded as a side effect of a build.
+  - Data: the installed app uses `%APPDATA%Surge`. On this machine that's the same folder as an old March 2026 "surge" build's settings (Windows paths are case-insensitive), so the installed app inherits them. Unpackaged runs use `%APPDATA%Surge Dev` unless `--user-data-dir` is given (`main.ts`), so dev never migrates the installed app's `surge.db`.
+  - The main process takes a single-instance lock: a second launch focuses the window. The window and tray icons load from `resources/`, rendered from `packaging/icon.svg` by `electron packaging/render-icons.cjs`.
+  - **Electron is pinned exactly** (35.7.5): electron-builder rejects a range it can't resolve through the hoisted layout.
+  - **What ships:** only `dependencies` become node_modules: `@libsql/client` (native), `@opennodes/*` (must not be bundled), and `ajv` / `ajv-formats`. Everything else main uses (`@surge/core`, openai, the MCP SDK, Gemini, React) is a devDependency bundled by electron-vite.
+  - **Why:** electron-builder's pnpm collector is wrong under `node-linker=hoisted`. It put top-level versions where nested duplicates belong (6 cases, including `openai`→`node-fetch` 3 instead of 2). It also dropped `ajv` once its other user became dev-only. One wrong copy, `formdata-node`→`web-streams-polyfill` 3.3.3, replaces `globalThis.ReadableStream`, and every `fetch()` body read in the packaged main then hangs: no registry models, no receipts.
+  - **`packaging/check-node-modules.cjs`** (afterPack) fails the build when a shipped package is missing a dependency or differs from what Node resolves in the source tree. Keep it.
+  - Verified on the installed copy: 41 ONP models with Auto first; libsql; the spend ledger; private mode, with the router listing the local Ollama models; the single-instance lock; a real Auto chat (lab gemma4, receipt verified); an `auto-private` chat; the exe icon and version info; uninstall keeps user data.
 - Licensed **Apache-2.0** (`LICENSE`, "Copyright 2026 The Surge Contributors"), matching the OpenNodes standard; every `package.json` declares it.
 - **No plans or tiers** (removed before going public). Every provider is listed for everyone; the Settings "Plan" tab, PRO locks, `license.*` / `search.daily*` settings and the 3-server cap are gone.
   - `SettingsPort` is just `get` / `set` / `getMaxConnections`. That reads `mcp.maxConnections` (default 25), a resource guard, not a plan limit.
@@ -194,9 +206,10 @@ Verification scripts for the ONP integration:
 
 ## What a good next session does
 
-1. **First installers.** The repo is public and source-only.
-   - Next: electron-builder packaging and a Windows release on GitHub Releases. That needs a code-signing certificate, or SmartScreen warns about an unknown publisher.
-   - Then macOS and Linux builds, once someone has tested them.
+1. **First installers.** A local, unsigned Windows installer builds and works (see "Windows installer" above).
+   - Next: a release workflow (windows-latest, on a `v*` tag) that runs `dist:win` and attaches the installer to a draft GitHub Release; then a README download link.
+   - Code signing is the user's decision (a certificate or Azure Trusted Signing). Unsigned, SmartScreen warns about an unknown publisher.
+   - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
 2. **Follow-ups:**
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
