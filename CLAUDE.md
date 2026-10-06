@@ -158,10 +158,20 @@ Verification scripts for the ONP integration:
 - **Bugs (open):**
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Private mode with tools.* Local models without tool support fail through the router: Surge's prompt-based tool fallback only triggers for `vllm-custom` / `ollama-local`.
-  - *Clipped picker (UX, pre-existing).* In the compact idle window (680×160) the model dropdown is clipped; nothing resizes the window when it opens.
-  - *Browser tool hangs with no page (pre-existing).* If a model calls `browser__getPageContent` while no page is loaded, the tool never returns and the chat stays "streaming" forever.
-  - *Empty tool-call header (pre-existing).* The IPC event `mcp:toolCall` sends `name`, but `McpToolCallBlock` reads `toolName` / `serverName`.
   - *Heavy prompts.* The chat sends all 27 browser + bookmarks tool definitions every turn (~3.2k prompt tokens), which is slow on small CPU nodes and inflates paid ceilings.
+- **Fixed for the launch kit** (2026-10-06):
+  - *Clipped picker.* In the 160px idle window, opening the model list grows the window to its expanded size and shrinks it back on close (unless a chat started meanwhile). The list is positioned against its real containing block: the search bar's `backdrop-filter` makes it the containing block for `position: fixed`. It sits above the hints row and is opaque.
+  - *Browser tool hang.* `BrowserService.executeTool` answers "No page is open…" when the view never loaded a page; there, `executeJavaScript` never settles. Every tool also has a ceiling of max(15s, timeoutMs + 5s).
+  - *Tool-call header.* The IPC event `mcp:toolCall` now carries `serverId` / `serverName` / `toolName`.
+- **Launch kit:** `docs/launch-kit/` holds the copy, the landing-page snippet, announcement drafts, a fact sheet of allowed claims, and `media/`.
+  - `scripts/launch-kit/capture.mjs` regenerates `media/` from the real built app over CDP (needs ffmpeg).
+  - The demo is recorded with `Page.startScreencast`, with model waits compressed. Stills are taken at 2× via `Emulation.setDeviceMetricsOverride`, dark and light. The browser shot stitches the app view and the embedded page.
+  - Window capture with ffmpeg `gdigrab` returns black frames for this GPU-composited window, which is why the script uses CDP. The window title is `@surge/desktop`.
+  - **Capture gotchas:**
+    - Long `Runtime.evaluate` awaits can fail with "Promise was collected". Hold the promise on `window` and poll long waits from Node.
+    - Screencast frames lag behind acks while animations play. Place them by their render timestamp, shifted onto `Date.now()` by the smallest delivery delay, and drain the backlog before stopping.
+    - Make the GIF from the MP4: fed the variable-duration concat directly, ffmpeg played every hold too short.
+    - Park a synthetic pointer (`Input.dispatchMouseEvent`) before scenes, because the real pointer's hover state leaks into frames.
 - No LICENSE file yet — the author's decision is open (Apache-2.0 to match the standard, or a product license). Do not add one unasked.
 - `.gitignore` covers `.claude/` and `tmpclaude-*`. `.npmrc` is benign (`node-linker=hoisted`). Never commit API keys; AI provider keys belong in the settings port / OS keychain.
 
@@ -174,7 +184,7 @@ Verification scripts for the ONP integration:
 
 ## What a good next session does
 
-1. **Launch kit.** Screenshots and a short demo for the OpenNodes launch kit (the "desktop client" section of the landing page is still a placeholder). Fix the clipped compact-mode picker and the browser-tool hang first.
+1. **Ship the launch kit.** Copy `docs/launch-kit/media/` into the opennodes repo (`site/media/`, and the GIF to `docs/media/`) and replace the Surge entry in `site/index.html` with the kit's snippet. That repo is public, so it's the owner's call, outside this repo. Then decide the license and open the repository for the first public build.
 2. **Follow-ups:**
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
