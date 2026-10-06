@@ -12,11 +12,36 @@ const COMPACT_HEIGHT = 160;
 const EXPANDED_WIDTH = 900;
 const EXPANDED_HEIGHT = 700;
 
+// Window and tray icons (rendered from packaging/icon.svg). Same relative path in dev and in app.asar.
+const RESOURCES = path.join(__dirname, '../../resources');
+
+// Unpackaged runs (pnpm dev / start) keep their own profile, so a dev build never migrates the
+// installed app's surge.db or fights it for the single-instance lock. --user-data-dir still wins.
+if (!app.isPackaged && !app.commandLine.hasSwitch('user-data-dir')) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'Surge Dev'));
+}
+
+// One instance per user profile: a second launch (Start menu, the installer's "Run Surge") focuses
+// the running window instead of opening another app on the same surge.db, tray and shortcut.
+const isPrimaryInstance = app.requestSingleInstanceLock();
+if (!isPrimaryInstance) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
+
 function createMainWindow(): void {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width: screenW, height: screenH } = primaryDisplay.workAreaSize;
 
   mainWindow = new BaseWindow({
+    title: 'Surge',
+    icon: path.join(RESOURCES, 'icon.png'),
     width: COMPACT_WIDTH,
     height: COMPACT_HEIGHT,
     x: Math.round((screenW - COMPACT_WIDTH) / 2),
@@ -93,8 +118,7 @@ function createMainWindow(): void {
 }
 
 function setupTray(): void {
-  const icon = nativeImage.createEmpty();
-  tray = new Tray(icon);
+  tray = new Tray(nativeImage.createFromPath(path.join(RESOURCES, 'tray.png')));
   tray.setToolTip('Surge — MCP Browser');
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Show Surge', click: () => mainWindow?.show() },
@@ -195,6 +219,8 @@ ipcMain.on('window:maximize', () => {
 });
 
 app.whenReady().then(() => {
+  if (!isPrimaryInstance) return;
+
   // Set up application menu with Edit accelerators (Copy/Paste/Cut/SelectAll)
   // Required for frameless windows where default menu is removed
   const appMenu = Menu.buildFromTemplate([
