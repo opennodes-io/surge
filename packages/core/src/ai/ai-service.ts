@@ -1,10 +1,10 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
-import type { SettingsPort } from '../ports/index.js';
+import type { SettingsPort, SecretStorePort } from '../ports/index.js';
 import type { ToolDefinition } from '../mcp/mcp-manager.js';
 import {
   OnpRegistryClient, ONP_DEFAULT_REGISTRY, ONP_AUTO_MODEL, adviseOnp, onpPriceRaised, formatOnpPrice, verifyOnpReceipt,
-  checkOnpPolicy, normalizeOnpPolicy, onpRequestCeiling,
+  checkOnpPolicy, normalizeOnpPolicy, onpRequestCeiling, ONP_FETCH_TIMEOUT_MS,
   type OnpOffering, type OnpTier, type OnpReceiptStatus, type OnpSpendPolicy,
 } from '../onp/index.js';
 
@@ -13,7 +13,7 @@ export type ModelLevel = 'quick' | 'smart' | 'best';
 export interface AiModel {
   id: string;
   name: string;
-  provider: 'gemini' | 'groq' | 'ollama' | 'claude' | 'mistral' | 'vllm' | 'onp';
+  provider: 'gemini' | 'groq' | 'ollama' | 'claude' | 'mistral' | 'vllm' | 'onp' | 'private';
   tier: 'free' | 'pro' | 'enterprise';
   description: string;
   supportsToolCalling: boolean;
@@ -23,6 +23,7 @@ export interface AiModel {
 
 /** One settled ONP call — what the chat shows under a reply, and what spend tracking counted. */
 export interface OnpCallRecord {
+  at: number;                    // when the call settled (ms since epoch)
   offering: string;              // nodeId/offeringId
   modelName: string;
   nodeId: string;
@@ -36,6 +37,7 @@ export interface OnpCallRecord {
   receiptId?: string;
   usage?: { promptTokens: number; completionTokens: number };
   amount?: { currency: string; value: number };
+  countedUsd: number;            // what the daily budget counted: the verified amount, else the request ceiling
   /** Set when the Auto model routed the call: why this node, and which picks failed first. */
   advisor?: { taskClass: string; score: number; reasons: string[]; considered: number; eligible: number; skipped: string[] };
 }
@@ -52,6 +54,15 @@ interface OnpCallContext {
 // Nominal request for marking listed offerings the policy would block (the real check, per
 // request, uses the actual prompt size).
 const NOMINAL_INPUT_TOKENS = 1000;
+
+// Per-host API keys for OpenNodes endpoints live in the secret store as `onp.key.<hostname>`:
+// a key is only ever sent to the host it was saved for (the gateway's BYOK model).
+const ONP_KEY_PREFIX = 'onp.key.';
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
+const hostOf = (o: Pick<OnpOffering, 'endpointBase'>) => new URL(o.endpointBase).hostname;
+
+/** Private mode's advisor model: routes only to local and LAN models (served by @opennodes/ollama-router). */
+export const PRIVATE_AUTO_MODEL = 'private:auto-private';
 
 interface StreamCallbacks {
   onToken: (token: string) => void;
@@ -112,17 +123,24 @@ export class AiService {
   private mistralClient: OpenAI | null = null;
   private vllmClient: OpenAI | null = null;
 
+  // Private mode: an embedded @opennodes/ollama-router (started by the shell) serving local + LAN models only
+  private privateRouter: string | null = null;
+  private privateClient: OpenAI | null = null;
+
   // OpenNodes (ONP) registry: dynamic model discovery with trust tiers + measured perf
   private onpRegistry: OnpRegistryClient | null = null;
   private onpOfferings: Map<string, OnpOffering> = new Map();
   private onpModels: AiModel[] = [];
   private onpClients: Map<string, OpenAI> = new Map(); // by endpoint base; pins go per request
   private onpLoadedAt = 0;
-  private onpCalls: OnpCallRecord[] = [];              // this session's settled calls (spend dashboard)
-  private onpPool: string[] = [];                      // admitted (community+) offerings the Auto model routes over
+  private onpCalls: OnpCallRecord[] = [];              // this session's settled calls
+  private onpCallListeners = new Set<(call: OnpCallRecord) => void>();
+  private onpPool: string[] = [];                      // offerings the Auto model routes over
+  private secrets: SecretStorePort | null;
 
-  constructor(settings: SettingsPort) {
+  constructor(settings: SettingsPort, secrets: SecretStorePort | null = null) {
     this.settings = settings;
+    this.secrets = secrets;
     this.initClients();
   }
 
@@ -197,10 +215,12 @@ export class AiService {
   async refreshOnpModels(): Promise<void> {
     if (!this.onpRegistry) return;
     try {
-      const [listed, admitted] = await Promise.all([
+      const [listed, admitted, keyed] = await Promise.all([
         this.onpRegistry.searchOfferings({ modality: 'text', sort: 'rank', limit: 40 }),
-        // The Auto model's pool: admitted nodes serve without an API key; imported listings don't.
+        // The Auto model's pool: admitted nodes serve without an API key; imported listings don't,
+        // so they join the pool only for hosts the user has saved a key for.
         this.onpRegistry.searchOfferings({ modality: 'text', tier: 'community', sort: 'rank', limit: 100 }).catch(() => []),
+        this.getOnpKeyHosts(),
       ]);
       // A pin re-resolved from the node's card (createCompletion) outranks a registry that is still
       // indexing an older revision; revisions are strictly increasing ISO-8601 timestamps (ONP-2).
@@ -210,15 +230,21 @@ export class AiService {
           ? { ...o, cardRevision: known.cardRevision, pricing: known.pricing } : o;
       };
       const offerings = listed.map(keepPin);
-      const pool = admitted.map(keepPin);
+      const admittedPool = admitted.map(keepPin);
+      const keyedPool = offerings.filter((o) => keyed.includes(hostOf(o)) && !admittedPool.some((a) => a.key === o.key));
+      const pool = [...admittedPool, ...keyedPool];
       this.onpOfferings = new Map([...pool, ...offerings].map((o) => [o.key, o]));
       this.onpPool = pool.map((o) => o.key);
+      const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+      const poolText = keyedPool.length
+        ? `${plural(admittedPool.length, 'admitted node')} + ${plural(keyedPool.length, 'offering')} you have keys for`
+        : plural(admittedPool.length, 'admitted node');
       const auto: AiModel[] = pool.length ? [{
         id: ONP_AUTO_MODEL,
         name: 'Auto (OpenNodes advisor)',
         provider: 'onp',
         tier: 'free',
-        description: `Picks one of ${pool.length} admitted node${pool.length === 1 ? '' : 's'} per prompt · ranked on this device, the prompt never leaves it`,
+        description: `Picks one of ${poolText} per prompt · ranked on this device, the prompt never leaves it`,
         supportsToolCalling: pool.some((o) => o.supports.includes('tool_calls')),
         level: 'smart',
         costEstimate: 'Within your policy',
@@ -247,16 +273,103 @@ export class AiService {
 
   /** Static providers plus live ONP registry models (refreshed at most once a minute). */
   async listModels(): Promise<AiModel[]> {
+    // Private mode lists only models on the user's own machines and never contacts the registry.
+    if (this.isPrivateMode()) return this.listPrivateModels();
     if (Date.now() - this.onpLoadedAt > 60_000) await this.refreshOnpModels();
     // Marked live, so a policy change shows on the next listing without a registry refresh.
     const policy = this.getOnpPolicy();
     const bounds = { estInputTokens: NOMINAL_INPUT_TOKENS, maxTokens: 4096, spentTodayUsd: this.getOnpSpentToday() };
+    const keyed = await this.getOnpKeyHosts();
     const onp = this.onpModels.map((m) => {
       const offering = this.onpOfferings.get(m.id.slice(4));
-      return offering && checkOnpPolicy(offering, policy, bounds)
-        ? { ...m, description: `${m.description} · blocked by your spend policy` } : m;
+      if (!offering) return m;
+      const notes = [keyed.includes(hostOf(offering)) ? 'your key' : '', checkOnpPolicy(offering, policy, bounds) ? 'blocked by your spend policy' : '']
+        .filter(Boolean);
+      return notes.length ? { ...m, description: `${m.description} · ${notes.join(' · ')}` } : m;
     });
     return [...this.getAvailableModels(), ...onp];
+  }
+
+  /** Private mode: model calls go only to the user's own machines (local Ollama and LAN peers). */
+  isPrivateMode(): boolean {
+    return this.settings.get('private.enabled') === true;
+  }
+
+  /** Point private mode at a running @opennodes/ollama-router (the shell starts it with no registry), or detach. */
+  setPrivateRouter(origin: string | null): void {
+    this.privateRouter = origin;
+    this.privateClient = origin ? new OpenAI({ apiKey: 'not-required', baseURL: `${origin}/v1`, maxRetries: 0 }) : null;
+  }
+
+  /** The router's local and LAN models, led by its auto-private advisor model. */
+  async listPrivateModels(): Promise<AiModel[]> {
+    if (!this.privateRouter) return [];
+    try {
+      const res = await fetch(`${this.privateRouter}/router/catalog`, { signal: AbortSignal.timeout(ONP_FETCH_TIMEOUT_MS) });
+      const catalog: any = await res.json();
+      const own: Array<{ name: string; tier: string; origin: string }> = (catalog.models ?? []).filter((m: any) => m.tier === 'local' || m.tier === 'lan');
+      return [
+        {
+          id: PRIVATE_AUTO_MODEL, name: 'Auto (private)', provider: 'private', tier: 'free',
+          description: `Picks one of ${own.length} model${own.length === 1 ? '' : 's'} on your machines per prompt · nothing leaves your network`,
+          supportsToolCalling: true, level: 'smart', costEstimate: 'Free',
+        },
+        ...own.map((m): AiModel => ({
+          id: `private:${m.name}`, name: m.name, provider: 'private', tier: 'free',
+          description: `${m.tier.toUpperCase()} · ${m.origin}`, supportsToolCalling: true, level: 'quick', costEstimate: 'Free',
+        })),
+      ];
+    } catch {
+      return [];
+    }
+  }
+
+  private assertModelAllowed(modelKey: string): void {
+    if (this.isPrivateMode() && !modelKey.startsWith('private:')) {
+      throw new Error('Private mode is on, so only models on your own machines can answer. Pick one (or Auto (private)), or turn private mode off.');
+    }
+    if (modelKey.startsWith('private:') && !this.privateClient) {
+      throw new Error('Private mode is not running. Turn it on to use the models on your own machines.');
+    }
+  }
+
+  /** Hostnames that have a saved OpenNodes API key (names only — keys never leave the store). */
+  async getOnpKeyHosts(): Promise<string[]> {
+    const names = (await this.secrets?.listSecrets?.()) ?? [];
+    return names.filter((n) => n.startsWith(ONP_KEY_PREFIX)).map((n) => n.slice(ONP_KEY_PREFIX.length)).sort();
+  }
+
+  /** Hosts of listed offerings that need the user's key (imported catalogs), with how many offerings each serves. */
+  getOnpKeyHostSuggestions(): Array<{ host: string; offerings: number }> {
+    const counts = new Map<string, number>();
+    for (const o of this.onpOfferings.values()) {
+      if (o.source === 'import') counts.set(hostOf(o), (counts.get(hostOf(o)) ?? 0) + 1);
+    }
+    return [...counts].map(([host, offerings]) => ({ host, offerings })).sort((a, b) => b.offerings - a.offerings);
+  }
+
+  /** Save the API key for one host; it is sent only to endpoints on exactly that hostname. */
+  async setOnpKey(host: string, key: string): Promise<void> {
+    if (!this.secrets) throw new Error('No secret store is available to keep API keys.');
+    const h = host.trim().toLowerCase();
+    if (!HOSTNAME.test(h)) throw new Error(`"${host}" is not a hostname.`);
+    if (!key.trim()) throw new Error('The API key is empty.');
+    await this.secrets.setSecret(ONP_KEY_PREFIX + h, key.trim());
+    this.forgetOnpHost(h);
+  }
+
+  async deleteOnpKey(host: string): Promise<void> {
+    const h = host.trim().toLowerCase();
+    await this.secrets?.deleteSecret?.(ONP_KEY_PREFIX + h);
+    this.forgetOnpHost(h);
+  }
+
+  // Clients carry the key they were built with; a key change rebuilds them and re-forms the Auto pool.
+  private forgetOnpHost(host: string): void {
+    for (const base of [...this.onpClients.keys()]) {
+      if (new URL(base).hostname === host) this.onpClients.delete(base);
+    }
+    this.onpLoadedAt = 0;
   }
 
   /** Pre-price a prompt against an ONP model (enforceable registry estimate). */
@@ -276,11 +389,12 @@ export class AiService {
     return offering;
   }
 
-  private getOnpClient(offering: OnpOffering): OpenAI {
+  private async getOnpClient(offering: OnpOffering): Promise<OpenAI> {
     let client = this.onpClients.get(offering.endpointBase);
     if (!client) {
+      const key = await this.secrets?.getSecret(ONP_KEY_PREFIX + hostOf(offering));
       client = new OpenAI({
-        apiKey: this.settings.get('ai.onpApiKey') || 'not-required',
+        apiKey: key || 'not-required',
         baseURL: offering.endpointBase,
         // The SDK resends 409s unchanged; ONP's 409 needs a re-resolved pin instead (invokeOnp).
         maxRetries: 0,
@@ -323,8 +437,10 @@ export class AiService {
     const check = await verifyOnpReceipt(ctx.receiptRef, offering);
     const r = check.receipt;
     // Only a verified receipt says what the call cost; otherwise count the most the policy allowed.
-    this.addOnpSpend(check.status === 'verified' && r ? r.amount.value : ctx.ceiling);
+    const countedUsd = check.status === 'verified' && r ? r.amount.value : ctx.ceiling;
+    this.addOnpSpend(countedUsd);
     const record: OnpCallRecord = {
+      at: Date.now(),
       offering: offering.key,
       modelName: offering.modelName,
       nodeId: offering.nodeId,
@@ -338,10 +454,20 @@ export class AiService {
       receiptId: r?.receipt_id,
       usage: r?.usage ? { promptTokens: r.usage.prompt_tokens, completionTokens: r.usage.completion_tokens } : undefined,
       amount: r?.amount,
+      countedUsd,
       advisor: ctx.advisor,
     };
     this.onpCalls.push(record);
+    for (const listener of this.onpCallListeners) {
+      try { listener(record); } catch { /* a failing listener (e.g. the ledger) must not fail the call */ }
+    }
     return record;
+  }
+
+  /** Be told about every settled ONP call (the desktop persists them for the spend dashboard). */
+  onOnpCallSettled(listener: (call: OnpCallRecord) => void): () => void {
+    this.onpCallListeners.add(listener);
+    return () => this.onpCallListeners.delete(listener);
   }
 
   /** ONP invocation profile: pin what we're calling and the price we saw — read fresh on every request. */
@@ -390,7 +516,7 @@ export class AiService {
    * policy at the new price, and retry once, or surface why not. `offering-mismatch` is surfaced.
    */
   private async invokeOnp(offering: OnpOffering, params: any, advisor?: OnpCallRecord['advisor']): Promise<{ data: any; onp: OnpCallContext }> {
-    const client = this.getOnpClient(offering);
+    const client = await this.getOnpClient(offering);
     const startedAt = Date.now();
     const send = async (pinned: OnpOffering, preface?: string) => {
       const ceiling = this.enforceOnpPolicy(pinned, params, preface);
@@ -450,6 +576,7 @@ export class AiService {
 
   // ONP models resolve their client per offering in invokeOnp.
   private getClientForModel(modelKey: string): { client: OpenAI | null; modelId: string } {
+    if (modelKey.startsWith('private:')) return { client: this.privateClient, modelId: modelKey.slice('private:'.length) };
     const modelId = this.getModelId(modelKey);
     switch (modelKey) {
       case 'groq-llama': return { client: this.groqClient, modelId };
@@ -463,6 +590,7 @@ export class AiService {
   }
 
   async chat(messages: any[], modelKey: string): Promise<any> {
+    this.assertModelAllowed(modelKey);
     // Gemini uses its own SDK
     if (modelKey.startsWith('gemini')) {
       return this.chatGemini(messages, modelKey);
@@ -499,6 +627,7 @@ export class AiService {
     systemPrompt?: string
   ): Promise<void> {
     try {
+      this.assertModelAllowed(modelKey);
       // Inject system prompt if provided
       const augmentedMessages = [...messages];
       if (systemPrompt) {

@@ -19,6 +19,7 @@ declare global {
         onStreamError: (callback: (error: string) => void) => () => void;
         onOnpCall: (callback: (call: OnpCall) => void) => () => void;
         getModels: () => Promise<AiModel[]>;
+        listVllmModels: (endpoint: string) => Promise<{ models?: string[]; error?: string }>;
       };
       mcp: {
         connect: (config: McpServerConfig) => Promise<any>;
@@ -80,6 +81,20 @@ declare global {
         get: (key: string) => Promise<any>;
         set: (key: string, value: any) => Promise<any>;
         getTier: () => Promise<string>;
+        secrets: () => Promise<{ encrypted: boolean; saved: Record<string, boolean> }>;
+      };
+      onp: {
+        spend: () => Promise<OnpSpend>;
+      };
+      private: {
+        status: () => Promise<PrivateStatus>;
+        setEnabled: (enabled: boolean) => Promise<PrivateStatus>;
+        configure: (cfg: { peers?: string[]; mdns?: boolean }) => Promise<PrivateStatus>;
+      };
+      onpKeys: {
+        list: () => Promise<{ encrypted: boolean; hosts: string[]; suggestions: Array<{ host: string; offerings: number }> }>;
+        set: (host: string, key: string) => Promise<{ success?: boolean; error?: string }>;
+        remove: (host: string) => Promise<{ success: boolean }>;
       };
     };
   }
@@ -95,6 +110,7 @@ export interface ChatMessage {
 
 // Mirrors @surge/core's OnpCallRecord: one settled OpenNodes call
 export interface OnpCall {
+  at: number;
   offering: string;
   modelName: string;
   nodeId: string;
@@ -108,7 +124,40 @@ export interface OnpCall {
   receiptId?: string;
   usage?: { promptTokens: number; completionTokens: number };
   amount?: { currency: string; value: number };
+  countedUsd: number;          // what the daily budget counted
   advisor?: { taskClass: string; score: number; reasons: string[]; considered: number; eligible: number; skipped: string[] };
+}
+
+// Private mode: model calls stay on this machine's Ollama and LAN peers
+export interface PrivateStatus {
+  enabled: boolean;
+  running: boolean;
+  origin: string | null;
+  ollama: string;
+  peers: string[];
+  mdns: boolean;
+  discoveredPeers: Array<{ name: string; kind: string; origin: string }>;
+  error?: string;
+}
+
+export const PRIVATE_AUTO_MODEL = 'private:auto-private';
+
+// The spend dashboard's data (mirrors OnpSpendSummary / OnpCallEntry from @surge/core/storage)
+export interface OnpSpend {
+  policy: { maxRequestUsd: number; dailyBudgetUsd: number; maxPricePerMtok: number | null; minTier: string; schemes: string[] };
+  todayUsd: number;
+  summary: {
+    since: number;
+    totalUsd: number;
+    calls: number;
+    byDay: Array<{ day: string; usd: number; calls: number }>;
+    byNode: Array<{ nodeId: string; usd: number; calls: number; verified: number; invalid: number; unreceipted: number }>;
+  };
+  recent: Array<{
+    id: string; at: number; offering: string; nodeId: string; modelName: string | null; tier: string | null; price: string | null;
+    receipt: OnpCall['receipt']; reason: string | null; promptTokens: number | null; completionTokens: number | null;
+    amount: { currency: string; value: number } | null; countedUsd: number; durationMs: number | null; advisor: Record<string, unknown> | null;
+  }>;
 }
 
 export type ModelLevel = 'quick' | 'smart' | 'best';

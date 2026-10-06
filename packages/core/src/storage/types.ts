@@ -112,3 +112,33 @@ export interface ChatMessage extends SyncMeta {
   name: string | null;
   seq: number;
 }
+
+/** A settled OpenNodes call in the spend ledger. */
+export interface OnpCallEntry extends SyncMeta {
+  id: string;
+  at: number;
+  offering: string;
+  nodeId: string;
+  modelName: string | null;
+  tier: string | null;
+  price: string | null;
+  cardRevision: string | null;
+  receipt: 'verified' | 'missing' | 'unverified' | 'invalid';
+  receiptId: string | null;
+  reason: string | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  amount: { currency: string; value: number } | null;
+  countedUsd: number;
+  durationMs: number | null;
+  advisor: Record<string, unknown> | null;
+}
+
+/** Spend over a window, by UTC day and by node; `usd` sums what the budget counted. */
+export interface OnpSpendSummary {
+  since: number;
+  totalUsd: number;
+  calls: number;
+  byDay: Array<{ day: string; usd: number; calls: number }>;
+  byNode: Array<{ nodeId: string; usd: number; calls: number; verified: number; invalid: number; unreceipted: number }>;
+}

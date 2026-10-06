@@ -12,8 +12,10 @@ import type {
   AgentSpec,
   ChatSession,
   ChatMessage,
+  OnpCallEntry,
+  OnpSpendSummary,
 } from './types.js';
-import { newId, now, toJson, parseJson, num, numOrNull, strOrNull, bool } from './util.js';
+import { newId, now, toJson, parseJson, num, numOrNull, str, strOrNull, bool } from './util.js';
 
 // ── Row mappers ─────────────────────────────────────────
 function mapBookmark(r: Row, tags: string[] = []): Bookmark {
@@ -544,5 +546,99 @@ export class ChatRepo extends BaseRepo {
       args: [sessionId],
     });
     return rs.rows.map(mapMessage);
+  }
+}
+
+// ── OpenNodes spend ledger ──────────────────────────────
+function mapOnpCall(r: Row): OnpCallEntry {
+  return {
+    id: String(r.id),
+    at: num(r.at),
+    offering: String(r.offering),
+    nodeId: String(r.node_id),
+    modelName: strOrNull(r.model_name),
+    tier: strOrNull(r.tier),
+    price: strOrNull(r.price),
+    cardRevision: strOrNull(r.card_revision),
+    receipt: str(r.receipt) as OnpCallEntry['receipt'],
+    receiptId: strOrNull(r.receipt_id),
+    reason: strOrNull(r.reason),
+    promptTokens: numOrNull(r.prompt_tokens),
+    completionTokens: numOrNull(r.completion_tokens),
+    amount: r.amount_currency == null ? null : { currency: String(r.amount_currency), value: num(r.amount_value) },
+    countedUsd: num(r.counted_usd),
+    durationMs: numOrNull(r.duration_ms),
+    advisor: parseJson<Record<string, unknown> | null>(r.advisor, null),
+    createdAt: num(r.created_at),
+    updatedAt: num(r.updated_at),
+    deletedAt: numOrNull(r.deleted_at),
+    rev: num(r.rev),
+    originDeviceId: strOrNull(r.origin_device_id),
+  };
+}
+
+export type OnpCallInput = Omit<OnpCallEntry, 'id' | 'createdAt' | 'updatedAt' | 'deletedAt' | 'rev' | 'originDeviceId'>;
+
+export class OnpCallsRepo extends BaseRepo {
+  async record(input: OnpCallInput): Promise<OnpCallEntry> {
+    const ts = now();
+    const id = newId();
+    await this.client.execute({
+      sql: `INSERT INTO onp_calls (id,at,offering,node_id,model_name,tier,price,card_revision,receipt,receipt_id,reason,
+              prompt_tokens,completion_tokens,amount_currency,amount_value,counted_usd,duration_ms,advisor,
+              created_at,updated_at,rev,origin_device_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args: [
+        id, input.at, input.offering, input.nodeId, input.modelName, input.tier, input.price, input.cardRevision,
+        input.receipt, input.receiptId, input.reason, input.promptTokens, input.completionTokens,
+        input.amount?.currency ?? null, input.amount?.value ?? null, input.countedUsd, input.durationMs,
+        toJson(input.advisor), ts, ts, 1, this.deviceId,
+      ],
+    });
+    return (await this.list({ limit: 1, id }))[0];
+  }
+
+  async list(opts: { limit?: number; since?: number; id?: string } = {}): Promise<OnpCallEntry[]> {
+    const where = ['deleted_at IS NULL'];
+    const args: (string | number)[] = [];
+    if (opts.id) { where.push('id=?'); args.push(opts.id); }
+    if (opts.since) { where.push('at>=?'); args.push(opts.since); }
+    args.push(opts.limit ?? 100);
+    const rs = await this.client.execute({
+      sql: `SELECT * FROM onp_calls WHERE ${where.join(' AND ')} ORDER BY at DESC LIMIT ?`,
+      args,
+    });
+    return rs.rows.map(mapOnpCall);
+  }
+
+  /** Spend over the last `days` UTC days (today included), by day and by node. */
+  async summary(opts: { days?: number } = {}): Promise<OnpSpendSummary> {
+    const days = opts.days ?? 14;
+    const today = new Date();
+    const since = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()) - (days - 1) * 86_400_000;
+    const byDay = await this.client.execute({
+      sql: `SELECT date(at/1000,'unixepoch') AS day, SUM(counted_usd) AS usd, COUNT(*) AS calls
+            FROM onp_calls WHERE deleted_at IS NULL AND at>=? GROUP BY day ORDER BY day`,
+      args: [since],
+    });
+    const byNode = await this.client.execute({
+      sql: `SELECT node_id, SUM(counted_usd) AS usd, COUNT(*) AS calls,
+              SUM(receipt='verified') AS verified, SUM(receipt='invalid') AS invalid,
+              SUM(receipt IN ('missing','unverified')) AS unreceipted
+            FROM onp_calls WHERE deleted_at IS NULL AND at>=? GROUP BY node_id ORDER BY usd DESC, calls DESC`,
+      args: [since],
+    });
+    const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
+    const dayRows = byDay.rows.map((r) => ({ day: String(r.day), usd: round6(num(r.usd)), calls: num(r.calls) }));
+    return {
+      since,
+      totalUsd: round6(dayRows.reduce((sum, d) => sum + d.usd, 0)),
+      calls: dayRows.reduce((sum, d) => sum + d.calls, 0),
+      byDay: dayRows,
+      byNode: byNode.rows.map((r) => ({
+        nodeId: String(r.node_id), usd: round6(num(r.usd)), calls: num(r.calls),
+        verified: num(r.verified), invalid: num(r.invalid), unreceipted: num(r.unreceipted),
+      })),
+    };
   }
 }

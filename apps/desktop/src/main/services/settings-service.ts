@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { app } from 'electron';
 import { ONP_DEFAULT_REGISTRY, DEFAULT_ONP_POLICY, type OnpSpendPolicy } from '@surge/core/onp';
+import type { SecretStore } from './secret-store';
 
 export type Tier = 'free' | 'pro' | 'enterprise';
 
@@ -65,14 +66,42 @@ const DEFAULTS: Partial<Settings> = {
   'ui.theme': 'dark',
 };
 
+// Provider API keys keep their settings names, but with an OS keychain their values live in the
+// SecretStore, never in surge-settings.json, and are never returned to the renderer.
+// ai.onpApiKey is retired (one key for every node); it is only migrated so it stops being plaintext.
+export const SECRET_SETTINGS = ['ai.geminiApiKey', 'ai.groqApiKey', 'ai.claudeApiKey', 'ai.mistralApiKey', 'ai.vllmApiKey', 'ai.onpApiKey'];
+
 export class SettingsService {
   private data: Record<string, any> = {};
   private filePath: string;
+  private secrets: SecretStore | null;
 
-  constructor() {
+  constructor(secrets: SecretStore | null = null) {
     const userDataPath = app?.getPath?.('userData') || '.';
     this.filePath = path.join(userDataPath, 'surge-settings.json');
+    this.secrets = secrets;
     this.load();
+    this.migrateSecrets();
+  }
+
+  /** True when provider keys are kept in the OS keychain (otherwise they stay in the settings file). */
+  secretsEncrypted(): boolean {
+    return !!this.secrets?.available();
+  }
+
+  hasSecret(key: string): boolean {
+    return this.secretsEncrypted() ? !!this.secrets!.getSecret(key) : !!this.data[key];
+  }
+
+  // One-time move of plaintext provider keys into the keychain.
+  private migrateSecrets(): void {
+    if (!this.secretsEncrypted()) return;
+    const present = SECRET_SETTINGS.filter((key) => key in this.data);
+    for (const key of present) {
+      if (typeof this.data[key] === 'string' && this.data[key]) this.secrets!.setSecret(key, this.data[key]);
+      delete this.data[key];
+    }
+    if (present.length) this.save();
   }
 
   private load(): void {
@@ -97,10 +126,16 @@ export class SettingsService {
   }
 
   get(key: string): any {
+    if (SECRET_SETTINGS.includes(key) && this.secretsEncrypted()) return this.secrets!.getSecret(key) ?? '';
     return this.data[key] ?? (DEFAULTS as any)[key] ?? null;
   }
 
   set(key: string, value: any): void {
+    if (SECRET_SETTINGS.includes(key) && this.secretsEncrypted()) {
+      if (value) this.secrets!.setSecret(key, String(value));
+      else this.secrets!.deleteSecret(key);
+      return;
+    }
     this.data[key] = value;
     this.save();
   }

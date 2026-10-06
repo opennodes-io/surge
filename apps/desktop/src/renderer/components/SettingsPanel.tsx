@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { IconX, IconSliders, IconBot, IconBolt, IconWrench, IconCreditCard, IconKey, IconCpu, IconNetwork } from './Icons';
-import type { AiModel, ModelLevel } from '../types';
+import { IconX, IconSliders, IconBot, IconBolt, IconWrench, IconCreditCard, IconKey, IconCpu, IconNetwork, IconFile } from './Icons';
+import type { AiModel, ModelLevel, PrivateStatus } from '../types';
+import SpendDashboard from './SpendDashboard';
 import './SettingsPanel.css';
 
 interface SettingsPanelProps {
@@ -20,16 +21,39 @@ const LEVEL_INFO: Record<ModelLevel, { icon: string; label: string; description:
   best:  { icon: '\uD83D\uDC8E', label: 'Best', description: 'Maximum quality for complex reasoning', className: 'level-best' },
 };
 
+// A write-only API key field: a saved key is never read back into the page. Typing a new key
+// and leaving the field (or pressing Enter) replaces it; Remove deletes it.
+const SecretField: React.FC<{ settingKey: string; placeholder: string; saved: boolean; onChange: (saved: boolean) => void }> = (
+  { settingKey, placeholder, saved, onChange },
+) => {
+  const [value, setValue] = useState('');
+  const commit = async () => {
+    if (!value.trim()) return;
+    await window.surge.settings.set(settingKey, value.trim());
+    setValue('');
+    onChange(true);
+  };
+  const remove = async () => {
+    await window.surge.settings.set(settingKey, '');
+    onChange(false);
+  };
+  return (
+    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+      <input className="input" type="password" placeholder={saved ? 'Saved \u2014 type a new key to replace it' : placeholder} value={value}
+        onChange={e => setValue(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); }} style={{ flex: 1 }} />
+      {saved && <button className="btn-ghost btn-sm" onClick={remove} style={{ whiteSpace: 'nowrap' }}>Remove</button>}
+    </div>
+  );
+};
+
 const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, onSelectModel, onModelsChanged, onClose }) => {
-  const [tab, setTab] = useState<'general' | 'models' | 'advanced' | 'subscription'>('general');
-  const [geminiKey, setGeminiKey] = useState('');
-  const [groqKey, setGroqKey] = useState('');
-  const [claudeKey, setClaudeKey] = useState('');
-  const [mistralKey, setMistralKey] = useState('');
+  const [tab, setTab] = useState<'general' | 'models' | 'advanced' | 'spend' | 'subscription'>('general');
+  // Which provider keys are saved (values stay in the main process) and whether the OS keychain holds them
+  const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
+  const [keysEncrypted, setKeysEncrypted] = useState(true);
   const [ollamaHost, setOllamaHost] = useState('http://localhost:11434');
   const [vllmEndpoint, setVllmEndpoint] = useState('');
   const [vllmModel, setVllmModel] = useState('');
-  const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmModels, setVllmModels] = useState<string[]>([]);
   const [vllmStatus, setVllmStatus] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle');
   const [onpRegistryUrl, setOnpRegistryUrl] = useState('');
@@ -38,19 +62,27 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
   // OpenNodes spend policy (ONP-5); numbers are edited as text and committed on blur
   const [policy, setPolicy] = useState({ maxRequestUsd: '0', dailyBudgetUsd: '0', maxPricePerMtok: '', minTier: 'unverified', schemes: ONP_SCHEMES });
   const [spentToday, setSpentToday] = useState(0);
+  // OpenNodes per-host API keys (host names only; keys are write-only)
+  const [onpKeys, setOnpKeys] = useState<{ encrypted: boolean; hosts: string[]; suggestions: Array<{ host: string; offerings: number }> }>({ encrypted: true, hosts: [], suggestions: [] });
+  const [newKeyHost, setNewKeyHost] = useState('');
+  const [newKeyValue, setNewKeyValue] = useState('');
+  const [onpKeyError, setOnpKeyError] = useState('');
+  // Private mode (embedded ollama-router): status, LAN peers, opt-in mDNS discovery
+  const [privateStatus, setPrivateStatus] = useState<PrivateStatus | null>(null);
+  const [newPeer, setNewPeer] = useState('');
   const [tier, setTier] = useState('free');
 
   useEffect(() => {
     const load = async () => {
       const s = window.surge.settings;
-      setGeminiKey(await s.get('ai.geminiApiKey') || '');
-      setGroqKey(await s.get('ai.groqApiKey') || '');
-      setClaudeKey(await s.get('ai.claudeApiKey') || '');
-      setMistralKey(await s.get('ai.mistralApiKey') || '');
+      const secrets = await s.secrets();
+      setSavedKeys(secrets.saved);
+      setKeysEncrypted(secrets.encrypted);
+      setOnpKeys(await window.surge.onpKeys.list());
+      setPrivateStatus(await window.surge.private.status());
       setOllamaHost(await s.get('ai.ollamaHost') || 'http://localhost:11434');
       setVllmEndpoint(await s.get('ai.vllmEndpoint') || '');
       setVllmModel(await s.get('ai.vllmModel') || '');
-      setVllmApiKey(await s.get('ai.vllmApiKey') || '');
       setOnpRegistryUrl(await s.get('ai.onpRegistryUrl') || '');
       const p = await s.get('onp.policy') || {};
       setPolicy({
@@ -92,17 +124,10 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
     setVllmStatus('checking');
     setVllmModels([]);
     try {
-      // Normalize endpoint: ensure it ends with /v1
-      let endpoint = vllmEndpoint.trim().replace(/\/+$/, '');
-      if (!endpoint.endsWith('/v1')) endpoint += '/v1';
-
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (vllmApiKey) headers['Authorization'] = `Bearer ${vllmApiKey}`;
-
-      const response = await fetch(`${endpoint}/models`, { headers });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      const models = (data.data || []).map((m: any) => m.id);
+      // Runs in the main process, which adds the saved API key (the page never sees it)
+      const result = await window.surge.ai.listVllmModels(vllmEndpoint);
+      if (result.error || !result.models) throw new Error(result.error);
+      const models = result.models;
       setVllmModels(models);
       setVllmStatus('connected');
       // Auto-select first model if none set
@@ -114,6 +139,31 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
       setVllmStatus('error');
       setVllmModels([]);
     }
+  };
+
+  const keySaved = (key: string) => (saved: boolean) => setSavedKeys(prev => ({ ...prev, [key]: saved }));
+
+  // A per-host key changes which offerings work (and the Auto pool), so reload the models after.
+  const saveOnpKey = async () => {
+    setOnpKeyError('');
+    const result = await window.surge.onpKeys.set(newKeyHost, newKeyValue);
+    if (result.error) { setOnpKeyError(result.error); return; }
+    setNewKeyHost('');
+    setNewKeyValue('');
+    setOnpKeys(await window.surge.onpKeys.list());
+    onModelsChanged(await window.surge.ai.getModels());
+  };
+
+  const removeOnpKey = async (host: string) => {
+    await window.surge.onpKeys.remove(host);
+    setOnpKeys(await window.surge.onpKeys.list());
+    onModelsChanged(await window.surge.ai.getModels());
+  };
+
+  // Peers and mDNS apply on the router's next start; a running router restarts.
+  const configurePrivate = async (cfg: { peers?: string[]; mdns?: boolean }) => {
+    setPrivateStatus(await window.surge.private.configure(cfg));
+    if (privateStatus?.enabled) onModelsChanged(await window.surge.ai.getModels());
   };
 
   // Save the registry URL, then reload the model list through the main process (which owns
@@ -143,6 +193,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
     { id: 'general' as const, icon: <IconSliders size={14} />, label: 'Models' },
     { id: 'models' as const, icon: <IconKey size={14} />, label: 'API Keys' },
     { id: 'advanced' as const, icon: <IconWrench size={14} />, label: 'Advanced' },
+    { id: 'spend' as const, icon: <IconFile size={14} />, label: 'Spend' },
     { id: 'subscription' as const, icon: <IconCreditCard size={14} />, label: 'Plan' },
   ];
 
@@ -236,35 +287,30 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
           <div className="settings-section">
             <h3>API Keys</h3>
             <p className="settings-hint">Free models (Gemini Flash-Lite, Groq) need free API keys. Get them in seconds — no credit card required.</p>
+            <p className="settings-hint" style={{ color: keysEncrypted ? 'var(--accent-green)' : 'var(--accent-orange)' }}>
+              {keysEncrypted ? 'Keys are kept in your OS keychain and are never shown again after saving.' : 'No OS keychain is available: provider keys are stored in the settings file.'}
+            </p>
 
             <div className="api-key-group">
               <label><IconKey size={13} /> Gemini API Key <a href="https://ai.google.dev" target="_blank" rel="noopener" className="key-link">(get free key)</a></label>
-              <input className="input" type="password" placeholder="AIza..." value={geminiKey}
-                onChange={e => setGeminiKey(e.target.value)}
-                onBlur={() => save('ai.geminiApiKey', geminiKey)} />
+              <SecretField settingKey="ai.geminiApiKey" placeholder="AIza..." saved={!!savedKeys['ai.geminiApiKey']} onChange={keySaved('ai.geminiApiKey')} />
             </div>
 
             <div className="api-key-group">
               <label><IconKey size={13} /> Groq API Key <a href="https://console.groq.com" target="_blank" rel="noopener" className="key-link">(get free key)</a></label>
-              <input className="input" type="password" placeholder="gsk_..." value={groqKey}
-                onChange={e => setGroqKey(e.target.value)}
-                onBlur={() => save('ai.groqApiKey', groqKey)} />
+              <SecretField settingKey="ai.groqApiKey" placeholder="gsk_..." saved={!!savedKeys['ai.groqApiKey']} onChange={keySaved('ai.groqApiKey')} />
             </div>
 
             {tier !== 'free' && (
               <>
                 <div className="api-key-group">
                   <label><IconKey size={13} /> Claude API Key</label>
-                  <input className="input" type="password" placeholder="sk-ant-..." value={claudeKey}
-                    onChange={e => setClaudeKey(e.target.value)}
-                    onBlur={() => save('ai.claudeApiKey', claudeKey)} />
+                  <SecretField settingKey="ai.claudeApiKey" placeholder="sk-ant-..." saved={!!savedKeys['ai.claudeApiKey']} onChange={keySaved('ai.claudeApiKey')} />
                 </div>
 
                 <div className="api-key-group">
                   <label><IconKey size={13} /> Mistral API Key</label>
-                  <input className="input" type="password" placeholder="" value={mistralKey}
-                    onChange={e => setMistralKey(e.target.value)}
-                    onBlur={() => save('ai.mistralApiKey', mistralKey)} />
+                  <SecretField settingKey="ai.mistralApiKey" placeholder="" saved={!!savedKeys['ai.mistralApiKey']} onChange={keySaved('ai.mistralApiKey')} />
                 </div>
               </>
             )}
@@ -349,6 +395,37 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
               </div>
             </div>
 
+            <div className="api-key-group">
+              <label><IconKey size={13} /> API keys by host</label>
+              <span className="settings-hint">
+                Imported catalogs (Hugging Face router, OpenRouter, …) need your own key. Each key is sent only to the host it is saved for,
+                and offerings on that host join Auto.{onpKeys.encrypted ? ' Kept in your OS keychain.' : ' No OS keychain is available, so keys cannot be saved.'}
+              </span>
+              {onpKeys.hosts.map(host => (
+                <div key={host} style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '6px' }}>
+                  <code style={{ flex: 1 }}>{host}</code>
+                  <span className="settings-hint">key saved</span>
+                  <button className="btn-ghost btn-sm" onClick={() => removeOnpKey(host)}>Remove</button>
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px' }}>
+                <input className="input" list="onp-key-hosts" placeholder="host, e.g. router.huggingface.co" value={newKeyHost}
+                  onChange={e => setNewKeyHost(e.target.value)} style={{ flex: 1 }} />
+                <datalist id="onp-key-hosts">
+                  {onpKeys.suggestions.filter(sg => !onpKeys.hosts.includes(sg.host)).map(sg => (
+                    <option key={sg.host} value={sg.host}>{sg.offerings} listed offering{sg.offerings === 1 ? '' : 's'}</option>
+                  ))}
+                </datalist>
+                <input className="input" type="password" placeholder="API key" value={newKeyValue}
+                  onChange={e => setNewKeyValue(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') saveOnpKey(); }} style={{ flex: 1 }} />
+                <button className="btn-primary btn-sm" onClick={saveOnpKey}
+                  disabled={!onpKeys.encrypted || !newKeyHost.trim() || !newKeyValue.trim()} style={{ whiteSpace: 'nowrap' }}>
+                  Save key
+                </button>
+              </div>
+              {onpKeyError && <span className="settings-hint" style={{ color: 'var(--accent-red)' }}>{onpKeyError}</span>}
+            </div>
+
             <h3 style={{marginTop: '24px'}}><IconCpu size={16} /> Ollama (Local)</h3>
             <div className="api-key-group">
               <label>Ollama Host URL</label>
@@ -356,6 +433,40 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                 onChange={e => setOllamaHost(e.target.value)}
                 onBlur={() => save('ai.ollamaHost', ollamaHost)} />
               <span className="settings-hint">Install Ollama at ollama.ai — runs models locally, 100% free & private</span>
+            </div>
+
+            <h3 style={{marginTop: '24px'}}>
+              <span aria-hidden="true">{'\uD83D\uDD12'}</span> Private mode
+              {privateStatus?.running && <span className="badge badge-green" style={{marginLeft: 8, fontSize: '0.6rem'}}>Running</span>}
+            </h3>
+            <div className="api-key-group">
+              <span className="settings-hint">
+                The lock beside the model picker switches it on. Model calls then go only to your Ollama ({privateStatus?.ollama ?? 'the host above'}) and
+                LAN peers, through an embedded OpenNodes router; the registry is not contacted. Connected MCP servers and pages you open are not affected.
+              </span>
+              {privateStatus?.error && <span className="settings-hint" style={{ color: 'var(--accent-red)' }}>{privateStatus.error}</span>}
+              <label style={{ marginTop: '8px' }}>LAN peers (Ollama servers or OpenNodes nodes)</label>
+              {(privateStatus?.peers ?? []).map(peer => (
+                <div key={peer} style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px' }}>
+                  <code style={{ flex: 1 }}>{peer}</code>
+                  <button className="btn-ghost btn-sm" onClick={() => configurePrivate({ peers: (privateStatus?.peers ?? []).filter(p => p !== peer) })}>Remove</button>
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '6px' }}>
+                <input className="input" placeholder="http://192.168.1.20:11434" value={newPeer}
+                  onChange={e => setNewPeer(e.target.value)} style={{ flex: 1 }} />
+                <button className="btn-primary btn-sm" disabled={!/^https?:\/\//.test(newPeer.trim())} style={{ whiteSpace: 'nowrap' }}
+                  onClick={() => { configurePrivate({ peers: [...(privateStatus?.peers ?? []), newPeer.trim()] }); setNewPeer(''); }}>
+                  Add peer
+                </button>
+              </div>
+              <label style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px', fontSize: 'var(--text-sm)' }}>
+                <input type="checkbox" checked={!!privateStatus?.mdns} onChange={e => configurePrivate({ mdns: e.target.checked })} />
+                Discover LAN machines automatically (mDNS; Windows may ask to allow network access)
+              </label>
+              {(privateStatus?.discoveredPeers.length ?? 0) > 0 && (
+                <span className="settings-hint">Reachable: {privateStatus!.discoveredPeers.map(p => `${p.name} (${p.kind})`).join(', ')}</span>
+              )}
             </div>
 
             <h3 style={{marginTop: '24px'}}>
@@ -374,9 +485,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
             </div>
             <div className="api-key-group">
               <label>API Key (optional — if your server requires auth)</label>
-              <input className="input" type="password" placeholder="Leave empty if no auth needed" value={vllmApiKey}
-                onChange={e => setVllmApiKey(e.target.value)}
-                onBlur={() => save('ai.vllmApiKey', vllmApiKey)} />
+              <SecretField settingKey="ai.vllmApiKey" placeholder="Leave empty if no auth needed" saved={!!savedKeys['ai.vllmApiKey']} onChange={keySaved('ai.vllmApiKey')} />
             </div>
             <div className="api-key-group">
               <label>Model</label>
@@ -410,6 +519,12 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                 </span>
               )}
             </div>
+          </div>
+        )}
+
+        {tab === 'spend' && (
+          <div className="settings-section">
+            <SpendDashboard />
           </div>
         )}
 
