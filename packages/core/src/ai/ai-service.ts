@@ -2,7 +2,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
 import type { SettingsPort } from '../ports/index.js';
 import type { ToolDefinition } from '../mcp/mcp-manager.js';
-import { OnpRegistryClient, type OnpOffering } from '../onp/index.js';
+import { OnpRegistryClient, ONP_DEFAULT_REGISTRY, type OnpOffering } from '../onp/index.js';
 
 export type ModelLevel = 'quick' | 'smart' | 'best';
 
@@ -137,7 +137,7 @@ export class AiService {
     }
 
     // OpenNodes registry (model discovery — no key needed for browsing)
-    const onpUrl = this.settings.get('ai.onpRegistryUrl') || 'http://127.0.0.1:4300';
+    const onpUrl = this.settings.get('ai.onpRegistryUrl') || ONP_DEFAULT_REGISTRY;
     this.onpRegistry = new OnpRegistryClient(onpUrl);
     this.onpOfferings.clear();
     this.onpClients.clear();

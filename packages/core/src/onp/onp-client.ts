@@ -4,6 +4,12 @@
 // rank explanations, capped context — that a rich model picker needs.
 // Registry API: https://github.com/opennodes-io/opennodes (ONP-3).
 
+/** The hosted OpenNodes registry (web app + /v0 API + /mcp). A local one: `npx @opennodes/registry` on :4300. */
+export const ONP_DEFAULT_REGISTRY = 'https://registry.opennodes.io';
+
+/** Registry search can stall (captive portal, half-open connection); never let it block the model picker. */
+const SEARCH_TIMEOUT_MS = 8_000;
+
 export type OnpTier = 'verified' | 'community' | 'unverified' | 'disputed' | 'suspended';
 
 export interface OnpOffering {
@@ -97,7 +103,7 @@ function normalize(o: any): OnpOffering {
 export class OnpRegistryClient {
   private baseUrl: string;
 
-  constructor(baseUrl = 'http://127.0.0.1:4300') {
+  constructor(baseUrl = ONP_DEFAULT_REGISTRY) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
   }
 
@@ -111,7 +117,7 @@ export class OnpRegistryClient {
     if (query.lang) p.set('lang', query.lang);
     p.set('sort', query.sort ?? 'rank');
     p.set('limit', String(query.limit ?? 50));
-    const res = await fetch(`${this.baseUrl}/v0/offerings?${p}`);
+    const res = await fetch(`${this.baseUrl}/v0/offerings?${p}`, { signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`ONP registry search failed: ${res.status}`);
     const body: any = await res.json();
     return (body.offerings ?? []).map(normalize);

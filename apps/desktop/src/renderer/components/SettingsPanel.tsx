@@ -7,6 +7,7 @@ interface SettingsPanelProps {
   selectedModel: string;
   models: AiModel[];
   onSelectModel: (id: string) => void;
+  onModelsChanged: (models: AiModel[]) => void;
   onClose: () => void;
 }
 
@@ -16,7 +17,7 @@ const LEVEL_INFO: Record<ModelLevel, { icon: string; label: string; description:
   best:  { icon: '\uD83D\uDC8E', label: 'Best', description: 'Maximum quality for complex reasoning', className: 'level-best' },
 };
 
-const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, onSelectModel, onClose }) => {
+const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, onSelectModel, onModelsChanged, onClose }) => {
   const [tab, setTab] = useState<'general' | 'models' | 'advanced' | 'subscription'>('general');
   const [geminiKey, setGeminiKey] = useState('');
   const [groqKey, setGroqKey] = useState('');
@@ -28,6 +29,9 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmModels, setVllmModels] = useState<string[]>([]);
   const [vllmStatus, setVllmStatus] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle');
+  const [onpRegistryUrl, setOnpRegistryUrl] = useState('');
+  const [onpModelCount, setOnpModelCount] = useState(0);
+  const [onpStatus, setOnpStatus] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle');
   const [tier, setTier] = useState('free');
 
   useEffect(() => {
@@ -41,6 +45,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
       setVllmEndpoint(await s.get('ai.vllmEndpoint') || '');
       setVllmModel(await s.get('ai.vllmModel') || '');
       setVllmApiKey(await s.get('ai.vllmApiKey') || '');
+      setOnpRegistryUrl(await s.get('ai.onpRegistryUrl') || '');
       setTier(await s.getTier());
     };
     load();
@@ -77,6 +82,22 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
     } catch (err: any) {
       setVllmStatus('error');
       setVllmModels([]);
+    }
+  };
+
+  // Save the registry URL, then reload the model list through the main process (which owns
+  // ONP discovery) so the picker reflects the new registry immediately.
+  const refreshOnpModels = async () => {
+    setOnpStatus('checking');
+    try {
+      await save('ai.onpRegistryUrl', onpRegistryUrl.trim());
+      const fresh: AiModel[] = await window.surge.ai.getModels();
+      onModelsChanged(fresh);
+      const count = fresh.filter(m => m.provider === 'onp').length;
+      setOnpModelCount(count);
+      setOnpStatus(count > 0 ? 'connected' : 'error');
+    } catch {
+      setOnpStatus('error');
     }
   };
 
@@ -221,7 +242,41 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
 
         {tab === 'advanced' && (
           <div className="settings-section">
-            <h3><IconCpu size={16} /> Ollama (Local)</h3>
+            <h3>
+              <IconNetwork size={16} /> OpenNodes Registry
+              {onpStatus === 'connected' && <span className="badge badge-green" style={{marginLeft: 8, fontSize: '0.6rem'}}>Connected</span>}
+              {onpStatus === 'error' && <span className="badge badge-red" style={{marginLeft: 8, fontSize: '0.6rem'}}>Error</span>}
+            </h3>
+            <div className="api-key-group">
+              <label>Registry URL</label>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <input className="input" placeholder="https://registry.opennodes.io" value={onpRegistryUrl}
+                  onChange={e => setOnpRegistryUrl(e.target.value)}
+                  onBlur={() => save('ai.onpRegistryUrl', onpRegistryUrl.trim())}
+                  style={{ flex: 1 }} />
+                <button className="btn-primary btn-sm" onClick={refreshOnpModels}
+                  disabled={onpStatus === 'checking'}
+                  style={{ whiteSpace: 'nowrap' }}>
+                  {onpStatus === 'checking' ? <div className="spinner spinner-sm" /> : 'Test & Refresh'}
+                </button>
+              </div>
+              <span className="settings-hint">
+                Models from OpenNodes nodes appear in the model picker with their trust tier, measured latency, and price.
+                Leave empty for the hosted registry; a local one runs with <code>npx @opennodes/registry</code> on http://127.0.0.1:4300
+              </span>
+              {onpStatus === 'connected' && (
+                <span className="settings-hint" style={{ color: 'var(--accent-green)' }}>
+                  {onpModelCount} OpenNodes model{onpModelCount !== 1 ? 's' : ''} now in the picker
+                </span>
+              )}
+              {onpStatus === 'error' && (
+                <span className="settings-hint" style={{ color: 'var(--accent-red)' }}>
+                  No models from this registry. Check the URL and that the registry is reachable.
+                </span>
+              )}
+            </div>
+
+            <h3 style={{marginTop: '24px'}}><IconCpu size={16} /> Ollama (Local)</h3>
             <div className="api-key-group">
               <label>Ollama Host URL</label>
               <input className="input" placeholder="http://localhost:11434" value={ollamaHost}

@@ -398,6 +398,7 @@ const App: React.FC = () => {
             selectedModel={selectedModel}
             models={models}
             onSelectModel={setSelectedModel}
+            onModelsChanged={setModels}
             onClose={() => { setShowSettings(false); if (messages.length === 0) setMode('idle'); else setMode('chat'); }}
           />
         ) : (
