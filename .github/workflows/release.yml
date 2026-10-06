@@ -1,0 +1,122 @@
+name: Release
+
+# Builds the Windows installer. On a `v*` tag it attaches the installer to a DRAFT pre-release,
+# which a maintainer reviews and publishes by hand; nothing is published automatically.
+# Pull requests that touch packaging build it too (artifact only), since ci.yml never packages.
+#
+# To release: bump apps/desktop/package.json "version", merge, then
+#   git tag v<version> && git push github v<version>
+# The tag must match that version, or the release job fails.
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - apps/desktop/package.json
+      - apps/desktop/electron-builder.yml
+      - apps/desktop/electron.vite.config.ts
+      - apps/desktop/packaging/**
+      - apps/desktop/resources/**
+      - apps/desktop/src/main/**
+      - packages/core/package.json
+      - pnpm-lock.yaml
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # electron-builder downloads its own Electron zip for packaging; the npm package's binary is unused.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version from package.json "packageManager"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - id: version
+        name: Version (and tag check)
+        run: |
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match apps/desktop/package.json version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
+      # Unsigned for now. To sign, give electron-builder a certificate (CSC_LINK / CSC_KEY_PASSWORD
+      # secrets) or Azure Trusted Signing (win.azureSignOptions) here.
+      - name: Build the installer (afterPack checks the shipped node_modules)
+        run: pnpm --filter @surge/desktop dist:win
+
+      - name: Checksums
+        working-directory: apps/desktop/release
+        run: sha256sum "Surge-Setup-${{ steps.version.outputs.version }}.exe" > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surge-windows-${{ steps.version.outputs.version }}
+          if-no-files-found: error
+          path: |
+            apps/desktop/release/Surge-Setup-${{ steps.version.outputs.version }}.exe
+            apps/desktop/release/Surge-Setup-${{ steps.version.outputs.version }}.exe.blockmap
+            apps/desktop/release/SHA256SUMS.txt
+
+  draft-release:
+    if: github.ref_type == 'tag'
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.windows.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: surge-windows-${{ needs.windows.outputs.version }}
+          path: dist
+
+      - name: Create or update the draft pre-release
+        run: |
+          cat > notes.md <<EOF
+          Surge $VERSION — pre-release for Windows (x64), built from ${GITHUB_SHA::7}.
+
+          **Install:** download \`Surge-Setup-$VERSION.exe\` and run it. It installs for your user only (no admin prompt) into \`%LOCALAPPDATA%\\Programs\\surge\`. Your data lives in \`%APPDATA%\\Surge\` and is kept if you uninstall.
+
+          **Not code-signed yet.** Windows SmartScreen will say "Windows protected your PC": choose *More info* → *Run anyway*. To check the download, compare \`certutil -hashfile Surge-Setup-$VERSION.exe SHA256\` with \`SHA256SUMS.txt\`.
+
+          macOS and Linux: build from source (see the README).
+          EOF
+          # A re-run refreshes the files of a draft, but never touches a release that's been published.
+          if is_draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2> /dev/null); then
+            if [ "$is_draft" != true ]; then
+              echo "::error::Release $GITHUB_REF_NAME is already published; not replacing its files"
+              exit 1
+            fi
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --draft --prerelease --title "Surge $VERSION" --notes-file notes.md
+          fi
