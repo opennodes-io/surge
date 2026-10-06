@@ -184,10 +184,10 @@ Verification scripts for the ONP integration:
 
 ## What a good next session does
 
-1. **Ship the launch kit.** The landing-page change is in review as [opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1), branch `site/surge-desktop-client`. A local clone is at `D:/Projects/AI/Projects/opennodes`.
-   - It replaces the Surge entry in `site/index.html` (hero `<picture>` in `site/media/`) and refreshes the README Ecosystem bullet with `docs/media/surge-demo.gif`. It was previewed in light and dark.
-   - Merging is the owner's call. Merging to `main` deploys opennodes.io (Cloudflare Workers Builds) and publishes pre-release screenshots.
-   - Then decide the license and open this repository for the first public build.
+1. **Launch kit is live (2026-10-06).** [opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1) is merged and deployed to opennodes.io. The Surge entry has a dark/light hero (`site/media/`), and the README Ecosystem bullet embeds `docs/media/surge-demo.gif`.
+   - A local clone is at `D:/Projects/AI/Projects/opennodes`.
+   - To refresh the assets, rerun `scripts/launch-kit/capture.mjs`, copy the files over, and open a PR there. Merging to `main` deploys the site.
+   - Next: decide the license and open this repository for the first public build.
 2. **Follow-ups:**
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
