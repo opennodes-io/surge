@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { app } from 'electron';
+import { ONP_DEFAULT_REGISTRY } from '@surge/core/onp';
 
 export type Tier = 'free' | 'pro' | 'enterprise';
 
@@ -14,6 +15,7 @@ interface Settings {
   'ai.ollamaHost': string;
   'ai.vllmEndpoint': string;
   'ai.vllmModel': string;
+  'ai.onpRegistryUrl': string; // OpenNodes registry for model discovery
 
   // License / tier
   'license.key': string;
@@ -45,6 +47,7 @@ const DEFAULTS: Partial<Settings> = {
   'ai.ollamaHost': 'http://localhost:11434',
   'ai.vllmEndpoint': '',
   'ai.vllmModel': '',
+  'ai.onpRegistryUrl': ONP_DEFAULT_REGISTRY,
   'license.key': '',
   'license.tier': 'free',
   'mcp.maxConnections': 3,

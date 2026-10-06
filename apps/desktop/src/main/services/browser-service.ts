@@ -1,5 +1,5 @@
 import type { WebContentsView } from 'electron';
-import type { ToolDefinition } from './mcp-manager';
+import type { ToolDefinition } from '@surge/core/mcp';
 
 /**
  * BrowserService — gives the AI model Playwright-like abilities to interact
