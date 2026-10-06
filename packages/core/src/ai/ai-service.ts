@@ -14,7 +14,6 @@ export interface AiModel {
   id: string;
   name: string;
   provider: 'gemini' | 'groq' | 'ollama' | 'claude' | 'mistral' | 'vllm' | 'onp' | 'private';
-  tier: 'free' | 'pro' | 'enterprise';
   description: string;
   supportsToolCalling: boolean;
   level: ModelLevel;       // Quick / Smart / Best classification
@@ -102,16 +101,16 @@ export interface ChatMessageWithTools {
 
 const ALL_MODELS: AiModel[] = [
   // ⚡ Quick level — free, fast responses
-  { id: 'gemini-flash-lite', name: 'Gemini 2.5 Flash-Lite', provider: 'gemini', tier: 'free', description: 'Fast & free, 1000 req/day', supportsToolCalling: true, level: 'quick', costEstimate: 'Free' },
-  { id: 'groq-llama', name: 'Llama 3.3 70B (Groq)', provider: 'groq', tier: 'free', description: 'Ultra-fast inference, free', supportsToolCalling: true, level: 'quick', costEstimate: 'Free' },
-  { id: 'ollama-local', name: 'Ollama Local', provider: 'ollama', tier: 'free', description: 'Private, unlimited, local', supportsToolCalling: true, level: 'quick', costEstimate: 'Free' },
+  { id: 'gemini-flash-lite', name: 'Gemini 2.5 Flash-Lite', provider: 'gemini', description: 'Fast & free, 1000 req/day', supportsToolCalling: true, level: 'quick', costEstimate: 'Free' },
+  { id: 'groq-llama', name: 'Llama 3.3 70B (Groq)', provider: 'groq', description: 'Ultra-fast inference, free', supportsToolCalling: true, level: 'quick', costEstimate: 'Free' },
+  { id: 'ollama-local', name: 'Ollama Local', provider: 'ollama', description: 'Private, unlimited, local', supportsToolCalling: true, level: 'quick', costEstimate: 'Free' },
   // 🧠 Smart level — great for most tasks
-  { id: 'gemini-pro', name: 'Gemini 2.5 Pro', provider: 'gemini', tier: 'pro', description: 'Most capable Gemini model', supportsToolCalling: true, level: 'smart', costEstimate: '~$0.01/msg' },
-  { id: 'claude-sonnet', name: 'Claude Sonnet', provider: 'claude', tier: 'pro', description: 'Balanced power & speed', supportsToolCalling: true, level: 'smart', costEstimate: '~$0.01/msg' },
-  { id: 'mistral-large', name: 'Mistral Large', provider: 'mistral', tier: 'pro', description: 'Multilingual powerhouse', supportsToolCalling: true, level: 'smart', costEstimate: '~$0.01/msg' },
-  { id: 'vllm-custom', name: 'vLLM / Local Network', provider: 'vllm', tier: 'free', description: 'Your own LAN or self-hosted model', supportsToolCalling: true, level: 'quick', costEstimate: 'Free' },
+  { id: 'gemini-pro', name: 'Gemini 2.5 Pro', provider: 'gemini', description: 'Most capable Gemini model', supportsToolCalling: true, level: 'smart', costEstimate: '~$0.01/msg' },
+  { id: 'claude-sonnet', name: 'Claude Sonnet', provider: 'claude', description: 'Balanced power & speed', supportsToolCalling: true, level: 'smart', costEstimate: '~$0.01/msg' },
+  { id: 'mistral-large', name: 'Mistral Large', provider: 'mistral', description: 'Multilingual powerhouse', supportsToolCalling: true, level: 'smart', costEstimate: '~$0.01/msg' },
+  { id: 'vllm-custom', name: 'vLLM / Local Network', provider: 'vllm', description: 'Your own LAN or self-hosted model', supportsToolCalling: true, level: 'quick', costEstimate: 'Free' },
   // 💎 Best level — maximum quality
-  { id: 'claude-opus', name: 'Claude Opus', provider: 'claude', tier: 'enterprise', description: 'Most capable Claude model', supportsToolCalling: true, level: 'best', costEstimate: '~$0.05/msg' },
+  { id: 'claude-opus', name: 'Claude Opus', provider: 'claude', description: 'Most capable Claude model', supportsToolCalling: true, level: 'best', costEstimate: '~$0.05/msg' },
 ];
 
 export class AiService {
@@ -243,7 +242,7 @@ export class AiService {
         id: ONP_AUTO_MODEL,
         name: 'Auto (OpenNodes advisor)',
         provider: 'onp',
-        tier: 'free',
+       
         description: `Picks one of ${poolText} per prompt · ranked on this device, the prompt never leaves it`,
         supportsToolCalling: pool.some((o) => o.supports.includes('tool_calls')),
         level: 'smart',
@@ -258,7 +257,6 @@ export class AiService {
           id: `onp:${o.key}`,
           name: o.modelName,
           provider: 'onp' as const,
-          tier: 'free' as const,           // visibility gating stays with Surge tiers
           description: bits.join(' · '),
           supportsToolCalling: o.supports.includes('tool_calls'),
           level: (o.tier === 'verified' || o.tier === 'attested' ? 'smart' : 'quick') as ModelLevel,
@@ -310,12 +308,12 @@ export class AiService {
       const own: Array<{ name: string; tier: string; origin: string }> = (catalog.models ?? []).filter((m: any) => m.tier === 'local' || m.tier === 'lan');
       return [
         {
-          id: PRIVATE_AUTO_MODEL, name: 'Auto (private)', provider: 'private', tier: 'free',
+          id: PRIVATE_AUTO_MODEL, name: 'Auto (private)', provider: 'private',
           description: `Picks one of ${own.length} model${own.length === 1 ? '' : 's'} on your machines per prompt · nothing leaves your network`,
           supportsToolCalling: true, level: 'smart', costEstimate: 'Free',
         },
         ...own.map((m): AiModel => ({
-          id: `private:${m.name}`, name: m.name, provider: 'private', tier: 'free',
+          id: `private:${m.name}`, name: m.name, provider: 'private',
           description: `${m.tier.toUpperCase()} · ${m.origin}`, supportsToolCalling: true, level: 'quick', costEstimate: 'Free',
         })),
       ];
@@ -552,12 +550,7 @@ export class AiService {
   }
 
   getAvailableModels(): AiModel[] {
-    const tier = this.settings.getTier();
-    return ALL_MODELS.filter(m => {
-      if (m.tier === 'enterprise') return tier === 'enterprise';
-      if (m.tier === 'pro') return tier === 'pro' || tier === 'enterprise';
-      return true;
-    });
+    return ALL_MODELS;
   }
 
   private getModelId(modelKey: string): string {

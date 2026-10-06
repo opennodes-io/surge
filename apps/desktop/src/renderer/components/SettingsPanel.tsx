@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { IconX, IconSliders, IconBot, IconBolt, IconWrench, IconCreditCard, IconKey, IconCpu, IconNetwork, IconFile } from './Icons';
+import { IconX, IconSliders, IconBot, IconWrench, IconKey, IconCpu, IconNetwork, IconFile } from './Icons';
 import type { AiModel, ModelLevel, PrivateStatus } from '../types';
 import SpendDashboard from './SpendDashboard';
 import './SettingsPanel.css';
@@ -47,7 +47,7 @@ const SecretField: React.FC<{ settingKey: string; placeholder: string; saved: bo
 };
 
 const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, onSelectModel, onModelsChanged, onClose }) => {
-  const [tab, setTab] = useState<'general' | 'models' | 'advanced' | 'spend' | 'subscription'>('general');
+  const [tab, setTab] = useState<'general' | 'models' | 'advanced' | 'spend'>('general');
   // Which provider keys are saved (values stay in the main process) and whether the OS keychain holds them
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
   const [keysEncrypted, setKeysEncrypted] = useState(true);
@@ -70,7 +70,6 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
   // Private mode (embedded ollama-router): status, LAN peers, opt-in mDNS discovery
   const [privateStatus, setPrivateStatus] = useState<PrivateStatus | null>(null);
   const [newPeer, setNewPeer] = useState('');
-  const [tier, setTier] = useState('free');
 
   useEffect(() => {
     const load = async () => {
@@ -94,7 +93,6 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
       });
       const spend = await s.get('onp.spend');
       setSpentToday(spend?.day === new Date().toISOString().slice(0, 10) ? Number(spend.usd) || 0 : 0);
-      setTier(await s.getTier());
     };
     load();
   }, []);
@@ -194,7 +192,6 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
     { id: 'models' as const, icon: <IconKey size={14} />, label: 'API Keys' },
     { id: 'advanced' as const, icon: <IconWrench size={14} />, label: 'Advanced' },
     { id: 'spend' as const, icon: <IconFile size={14} />, label: 'Spend' },
-    { id: 'subscription' as const, icon: <IconCreditCard size={14} />, label: 'Plan' },
   ];
 
   return (
@@ -258,24 +255,18 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                     </div>
                   </div>
                   <div className="model-grid">
-                    {levelModels.map(m => {
-                      const isLocked = m.tier !== 'free' && tier === 'free';
-                      return (
-                        <button
-                          key={m.id}
-                          className={`model-card ${m.id === selectedModel ? 'active' : ''} ${isLocked ? 'locked' : ''}`}
-                          onClick={() => { if (!isLocked) onSelectModel(m.id); }}
-                        >
-                          <div className="model-card-icon"><IconBot size={20} /></div>
-                          <div className="model-card-name">{m.name}</div>
-                          <div className="model-card-desc">{m.description}</div>
-                          <div className="model-card-cost">{m.costEstimate}</div>
-                          {isLocked && (
-                            <span className="badge badge-purple" style={{marginTop: '4px'}}>PRO</span>
-                          )}
-                        </button>
-                      );
-                    })}
+                    {levelModels.map(m => (
+                      <button
+                        key={m.id}
+                        className={`model-card ${m.id === selectedModel ? 'active' : ''}`}
+                        onClick={() => onSelectModel(m.id)}
+                      >
+                        <div className="model-card-icon"><IconBot size={20} /></div>
+                        <div className="model-card-name">{m.name}</div>
+                        <div className="model-card-desc">{m.description}</div>
+                        <div className="model-card-cost">{m.costEstimate}</div>
+                      </button>
+                    ))}
                   </div>
                 </div>
               );
@@ -301,19 +292,15 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
               <SecretField settingKey="ai.groqApiKey" placeholder="gsk_..." saved={!!savedKeys['ai.groqApiKey']} onChange={keySaved('ai.groqApiKey')} />
             </div>
 
-            {tier !== 'free' && (
-              <>
-                <div className="api-key-group">
-                  <label><IconKey size={13} /> Claude API Key</label>
-                  <SecretField settingKey="ai.claudeApiKey" placeholder="sk-ant-..." saved={!!savedKeys['ai.claudeApiKey']} onChange={keySaved('ai.claudeApiKey')} />
-                </div>
+            <div className="api-key-group">
+              <label><IconKey size={13} /> Claude API Key</label>
+              <SecretField settingKey="ai.claudeApiKey" placeholder="sk-ant-..." saved={!!savedKeys['ai.claudeApiKey']} onChange={keySaved('ai.claudeApiKey')} />
+            </div>
 
-                <div className="api-key-group">
-                  <label><IconKey size={13} /> Mistral API Key</label>
-                  <SecretField settingKey="ai.mistralApiKey" placeholder="" saved={!!savedKeys['ai.mistralApiKey']} onChange={keySaved('ai.mistralApiKey')} />
-                </div>
-              </>
-            )}
+            <div className="api-key-group">
+              <label><IconKey size={13} /> Mistral API Key</label>
+              <SecretField settingKey="ai.mistralApiKey" placeholder="" saved={!!savedKeys['ai.mistralApiKey']} onChange={keySaved('ai.mistralApiKey')} />
+            </div>
           </div>
         )}
 
@@ -528,51 +515,6 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
           </div>
         )}
 
-        {tab === 'subscription' && (
-          <div className="settings-section">
-            <div className="tier-current">
-              <span className="tier-badge"><IconBolt size={24} /></span>
-              <div>
-                <div className="tier-name">Surge {tier.charAt(0).toUpperCase() + tier.slice(1)}</div>
-                <div className="tier-desc">
-                  {tier === 'free' ? 'Free forever — Quick models, 3 MCP connections' : 'All premium features unlocked'}
-                </div>
-              </div>
-            </div>
-
-            {tier === 'free' && (
-              <div className="upgrade-section">
-                <h3>Upgrade to Pro</h3>
-                <div className="upgrade-comparison">
-                  <div className="upgrade-col">
-                    <h4>Free</h4>
-                    <ul>
-                      <li>{'\u26A1'} Quick models (Gemini, Groq, Ollama)</li>
-                      <li>3 MCP connections</li>
-                      <li>50 searches/day</li>
-                      <li>MCPWeb detection</li>
-                      <li>Browser AI tools</li>
-                    </ul>
-                  </div>
-                  <div className="upgrade-col pro">
-                    <h4>Pro — $9.99/mo</h4>
-                    <ul>
-                      <li>Everything in Free</li>
-                      <li>{'\uD83E\uDDE0'} Smart models (Claude Sonnet, GPT-4o, Gemini Pro)</li>
-                      <li>{'\uD83D\uDC8E'} Best models (Claude Opus)</li>
-                      <li>Unlimited MCP connections</li>
-                      <li>Unlimited search</li>
-                      <li>Power-Up Packs</li>
-                    </ul>
-                    <button className="btn-primary" style={{width: '100%', marginTop: '16px'}}>
-                      Upgrade Now
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );

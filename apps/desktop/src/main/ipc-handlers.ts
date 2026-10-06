@@ -261,7 +261,6 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
     return { success: true };
   });
 
-  ipcMain.handle('settings:getTier', async () => settingsService.getTier());
 
   // vLLM model discovery runs here so a saved key can be used without exposing it to the renderer.
   ipcMain.handle('ai:listVllmModels', async (_event, endpoint: string) => {

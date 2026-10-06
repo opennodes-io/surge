@@ -1,5 +1,3 @@
-export type Tier = 'free' | 'pro' | 'enterprise';
-
 /**
  * Platform-neutral settings access. The Electron shell's hand-rolled
  * SettingsService satisfies this structurally; a mobile shell can back it with
@@ -8,9 +6,6 @@ export type Tier = 'free' | 'pro' | 'enterprise';
 export interface SettingsPort {
   get(key: string): any;
   set(key: string, value: any): void;
-  getTier(): Tier;
+  /** How many MCP servers may be connected at once (a resource guard, not a plan limit). */
   getMaxConnections(): number;
-  isFeatureAvailable?(feature: string): boolean;
-  checkSearchQuota?(): boolean;
-  incrementSearchCount?(): void;
 }

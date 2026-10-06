@@ -80,7 +80,6 @@ declare global {
       settings: {
         get: (key: string) => Promise<any>;
         set: (key: string, value: any) => Promise<any>;
-        getTier: () => Promise<string>;
         secrets: () => Promise<{ encrypted: boolean; saved: Record<string, boolean> }>;
       };
       onp: {
@@ -166,7 +165,6 @@ export interface AiModel {
   id: string;
   name: string;
   provider: string;
-  tier: string;
   description: string;
   supportsToolCalling: boolean;
   level?: ModelLevel;          // Which Quick/Smart/Best level this model can serve

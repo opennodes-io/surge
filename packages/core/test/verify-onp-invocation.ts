@@ -192,7 +192,6 @@ async function main() {
   const settings: SettingsPort = {
     get: (key: string) => store[key],
     set: (key: string, value: any) => { store[key] = value; },
-    getTier: () => 'free',
     getMaxConnections: () => 3,
   };
   const ai = new AiService(settings);
