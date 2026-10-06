@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2035"/>
+      <stop offset="1" stop-color="#0a0e1a"/>
+    </linearGradient>
+    <!-- --gradient-primary from the app's design system -->
+    <linearGradient id="primary" gradientUnits="userSpaceOnUse" x1="170" y1="90" x2="350" y2="430">
+      <stop offset="0" stop-color="#06b6d4"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#ec4899"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bg)"/>
+  <rect x="17.5" y="17.5" width="477" height="477" rx="106.5" fill="none" stroke="url(#primary)" stroke-opacity="0.35" stroke-width="3"/>
+  <path id="bolt" d="M298 70 L134 290 L242 290 L210 442 L380 212 L272 212 L320 70 Z" fill="url(#primary)" opacity="0.55" filter="url(#glow)"/>
+  <path d="M298 70 L134 290 L242 290 L210 442 L380 212 L272 212 L320 70 Z" fill="url(#primary)" stroke="#ffffff" stroke-opacity="0.18" stroke-width="4" stroke-linejoin="round"/>
+</svg>
