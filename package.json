@@ -11,7 +11,8 @@
     "build:core": "pnpm --filter @surge/core build",
     "build:server": "pnpm --filter @surge/bookmarks-history-mcp build",
     "build:desktop": "pnpm --filter @surge/desktop build",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test": "node scripts/test.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
