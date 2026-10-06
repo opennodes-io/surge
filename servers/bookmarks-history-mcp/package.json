@@ -1,6 +1,7 @@
 {
   "name": "@surge/bookmarks-history-mcp",
   "version": "1.0.0",
+  "license": "Apache-2.0",
   "description": "Standalone MCP server exposing Surge bookmarks & history over a shared local SQLite DB — usable by any MCP client (Claude Desktop, Cursor, ...).",
   "type": "module",
   "bin": {

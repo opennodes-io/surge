@@ -1,6 +1,7 @@
 {
   "name": "@surge/core",
   "version": "1.0.0",
+  "license": "Apache-2.0",
   "description": "Surge core — platform-agnostic MCP, AI, storage, discovery and UI logic",
   "type": "module",
   "main": "./src/index.ts",

@@ -1,6 +1,7 @@
 {
   "name": "@surge/desktop",
   "version": "1.0.0",
+  "license": "Apache-2.0",
   "description": "Surge desktop — Electron shell for the Surge MCP client",
   "main": "dist/main/main.js",
   "scripts": {

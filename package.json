@@ -1,6 +1,7 @@
 {
   "name": "@surge/monorepo",
   "version": "1.0.0",
+  "license": "Apache-2.0",
   "description": "Surge — a modern MCP client (desktop + mobile) that operates over MCP servers",
   "private": true,
   "packageManager": "pnpm@10.29.3",

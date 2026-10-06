@@ -42,3 +42,7 @@ pnpm --filter @surge/bookmarks-history-mcp build   # build the standalone MCP se
 ## Status
 
 First revision milestone implemented: monorepo + shared core, standalone bookmarks/history MCP server, Web→MCP adapter, MCP Apps/MCP-UI rendering, discovery+rating browser, in-app bookmarks/history, mobile scaffold. Deferred (seams in place): agentic code-gen of persistent site servers + agent profiles, profiles/chat-history UI, cloud sync, gateway runtime, diffusion/image models.
+
+## License
+
+Apache License 2.0, the same license as the OpenNodes standard. See [LICENSE](LICENSE).

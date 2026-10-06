@@ -172,7 +172,7 @@ Verification scripts for the ONP integration:
     - Screencast frames lag behind acks while animations play. Place them by their render timestamp, shifted onto `Date.now()` by the smallest delivery delay, and drain the backlog before stopping.
     - Make the GIF from the MP4: fed the variable-duration concat directly, ffmpeg played every hold too short.
     - Park a synthetic pointer (`Input.dispatchMouseEvent`) before scenes, because the real pointer's hover state leaks into frames.
-- No LICENSE file yet — the author's decision is open (Apache-2.0 to match the standard, or a product license). Do not add one unasked.
+- Licensed **Apache-2.0** (`LICENSE`, "Copyright 2026 The Surge Contributors"), matching the OpenNodes standard; every `package.json` declares it.
 - `.gitignore` covers `.claude/` and `tmpclaude-*`. `.npmrc` is benign (`node-linker=hoisted`). Never commit API keys; AI provider keys belong in the settings port / OS keychain.
 
 ## Conventions
@@ -187,7 +187,7 @@ Verification scripts for the ONP integration:
 1. **Launch kit is live (2026-10-06).** [opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1) is merged and deployed to opennodes.io. The Surge entry has a dark/light hero (`site/media/`), and the README Ecosystem bullet embeds `docs/media/surge-demo.gif`.
    - A local clone is at `D:/Projects/AI/Projects/opennodes`.
    - To refresh the assets, rerun `scripts/launch-kit/capture.mjs`, copy the files over, and open a PR there. Merging to `main` deploys the site.
-   - Next: decide the license and open this repository for the first public build.
+   - Next: open this repository for the first public build.
 2. **Follow-ups:**
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.

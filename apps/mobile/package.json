@@ -1,6 +1,7 @@
 {
   "name": "@surge/mobile",
   "version": "1.0.0",
+  "license": "Apache-2.0",
   "description": "Surge mobile shell (Capacitor) — reuses @surge/core; embedded-browser/Web->MCP features are gated off.",
   "private": true,
   "type": "module",
