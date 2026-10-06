@@ -7,10 +7,13 @@
 /** The hosted OpenNodes registry (web app + /v0 API + /mcp). A local one: `npx @opennodes/registry` on :4300. */
 export const ONP_DEFAULT_REGISTRY = 'https://registry.opennodes.io';
 
-/** Registry search can stall (captive portal, half-open connection); never let it block the model picker. */
-const SEARCH_TIMEOUT_MS = 8_000;
+/** Registry/node fetches can stall (captive portal, half-open connection); never let them block the UI. */
+const FETCH_TIMEOUT_MS = 8_000;
 
-export type OnpTier = 'verified' | 'community' | 'unverified' | 'disputed' | 'suspended';
+/** Registry tiers, plus the client-side `local` / `lan` tiers (your own machines, fully trusted). */
+export type OnpTier = 'attested' | 'verified' | 'community' | 'unverified' | 'disputed' | 'suspended' | 'local' | 'lan';
+
+export interface OnpPricing { currency: string; inputPerMtok: number; outputPerMtok: number; schemes: string[] }
 
 export interface OnpOffering {
   /** stable key: `${nodeId}/${offeringId}` */
@@ -31,7 +34,7 @@ export interface OnpOffering {
   endpointBase: string;           // OpenAI-compatible base URL of the serving node
   bindingModelId: string;         // the `model` value to send on the wire
   cardRevision: string;           // pin this at invocation — makes the price enforceable
-  pricing: { currency: string; inputPerMtok: number; outputPerMtok: number; schemes: string[] };
+  pricing: OnpPricing;
   contextWindow?: number;
   contextCappedFrom?: number;     // registry capped an overclaimed window — trust signal
   supports: string[];             // tool_calls, json_mode, vision, streaming
@@ -43,7 +46,7 @@ export interface OnpOffering {
 export interface OnpSearchQuery {
   search?: string;
   modality?: string;
-  tier?: 'community' | 'verified';
+  tier?: 'community' | 'verified' | 'attested'; // minimum tier
   supports?: string[];
   maxInputPrice?: number;
   lang?: string;                  // e.g. "en:strong"
@@ -61,6 +64,15 @@ export interface OnpEstimateStep {
 export interface OnpEstimate {
   total: { currency: string; min: number; max: number };
   steps: Array<{ offering: string; card_revision: string; cost: { currency: string; min: number; max: number } }>;
+}
+
+function normalizePricing(p: any): OnpPricing {
+  return {
+    currency: p?.currency ?? 'USD',
+    inputPerMtok: p?.input_per_mtok ?? 0,
+    outputPerMtok: p?.output_per_mtok ?? 0,
+    schemes: p?.schemes ?? [],
+  };
 }
 
 function normalize(o: any): OnpOffering {
@@ -81,12 +93,7 @@ function normalize(o: any): OnpOffering {
     endpointBase: String(o.endpoints?.openai ?? '').replace(/\/+$/, ''),
     bindingModelId: o.binding?.model_id ?? o.offering_id,
     cardRevision: o.card_revision ?? '',
-    pricing: {
-      currency: o.pricing?.currency ?? 'USD',
-      inputPerMtok: o.pricing?.input_per_mtok ?? 0,
-      outputPerMtok: o.pricing?.output_per_mtok ?? 0,
-      schemes: o.pricing?.schemes ?? [],
-    },
+    pricing: normalizePricing(o.pricing),
     contextWindow: o.serving?.context_window ?? undefined,
     contextCappedFrom: o.serving?.context_capped_from ?? undefined,
     supports: o.serving?.supports ?? [],
@@ -117,7 +124,7 @@ export class OnpRegistryClient {
     if (query.lang) p.set('lang', query.lang);
     p.set('sort', query.sort ?? 'rank');
     p.set('limit', String(query.limit ?? 50));
-    const res = await fetch(`${this.baseUrl}/v0/offerings?${p}`, { signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) });
+    const res = await fetch(`${this.baseUrl}/v0/offerings?${p}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`ONP registry search failed: ${res.status}`);
     const body: any = await res.json();
     return (body.offerings ?? []).map(normalize);
@@ -140,4 +147,38 @@ export class OnpRegistryClient {
     if (!res.ok) throw new Error(body?.detail ?? `ONP estimate failed: ${res.status}`);
     return body as OnpEstimate;
   }
+}
+
+/**
+ * Re-resolve an offering's current revision and price from the node's own card
+ * (`{origin}/.well-known/open-node.json`, ONP-2) — the ground truth after a 409 price_changed;
+ * the registry may still be indexing the old revision. Returns null when the node no longer
+ * lists the offering. Card signature verification arrives with @opennodes/core.
+ */
+export async function resolveCardOffering(
+  offering: Pick<OnpOffering, 'endpointBase' | 'nodeId' | 'offeringId'>,
+): Promise<{ cardRevision: string; pricing: OnpPricing } | null> {
+  const origin = new URL(offering.endpointBase).origin;
+  const res = await fetch(`${origin}/.well-known/open-node.json`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`ONP card fetch from ${origin} failed: ${res.status}`);
+  const card: any = await res.json();
+  if (card.node?.id && card.node.id !== offering.nodeId) {
+    throw new Error(`ONP card at ${origin} is for ${card.node.id}, not ${offering.nodeId}`);
+  }
+  const fresh = (card.offerings ?? []).find((o: any) => o.offering_id === offering.offeringId);
+  if (!fresh || !card.revision) return null;
+  return { cardRevision: String(card.revision), pricing: normalizePricing(fresh.pricing) };
+}
+
+/** True when `next` costs more than `prev` on either side, or is in another currency. */
+export function onpPriceRaised(prev: OnpPricing, next: OnpPricing): boolean {
+  return next.currency !== prev.currency
+    || next.inputPerMtok > prev.inputPerMtok
+    || next.outputPerMtok > prev.outputPerMtok;
+}
+
+export function formatOnpPrice(p: OnpPricing): string {
+  if (p.inputPerMtok === 0 && p.outputPerMtok === 0) return 'Free';
+  const sym = p.currency === 'USD' ? '$' : `${p.currency} `;
+  return `${sym}${p.inputPerMtok}/${sym}${p.outputPerMtok} per MTok`;
 }

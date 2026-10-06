@@ -2,7 +2,9 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
 import type { SettingsPort } from '../ports/index.js';
 import type { ToolDefinition } from '../mcp/mcp-manager.js';
-import { OnpRegistryClient, ONP_DEFAULT_REGISTRY, type OnpOffering } from '../onp/index.js';
+import {
+  OnpRegistryClient, ONP_DEFAULT_REGISTRY, resolveCardOffering, onpPriceRaised, formatOnpPrice, type OnpOffering,
+} from '../onp/index.js';
 
 export type ModelLevel = 'quick' | 'smart' | 'best';
 
@@ -15,6 +17,12 @@ export interface AiModel {
   supportsToolCalling: boolean;
   level: ModelLevel;       // Quick / Smart / Best classification
   costEstimate: string;    // e.g. "Free", "~$0.01/msg"
+}
+
+interface ClientForModel {
+  client: OpenAI | null;
+  modelId: string;
+  requestOptions?: OpenAI.RequestOptions; // per-request extras (ONP pin headers)
 }
 
 interface StreamCallbacks {
@@ -71,7 +79,7 @@ export class AiService {
   private onpRegistry: OnpRegistryClient | null = null;
   private onpOfferings: Map<string, OnpOffering> = new Map();
   private onpModels: AiModel[] = [];
-  private onpClients: Map<string, OpenAI> = new Map();
+  private onpClients: Map<string, OpenAI> = new Map(); // by endpoint base; pins go per request
   private onpLoadedAt = 0;
 
   constructor(settings: SettingsPort) {
@@ -149,11 +157,16 @@ export class AiService {
   async refreshOnpModels(): Promise<void> {
     if (!this.onpRegistry) return;
     try {
-      const offerings = await this.onpRegistry.searchOfferings({ modality: 'text', sort: 'rank', limit: 40 });
+      const listed = await this.onpRegistry.searchOfferings({ modality: 'text', sort: 'rank', limit: 40 });
+      // A pin re-resolved from the node's card (createCompletion) outranks a registry that is still
+      // indexing an older revision; revisions are strictly increasing ISO-8601 timestamps (ONP-2).
+      const offerings = listed.map((o) => {
+        const known = this.onpOfferings.get(o.key);
+        return known && Date.parse(known.cardRevision) > Date.parse(o.cardRevision)
+          ? { ...o, cardRevision: known.cardRevision, pricing: known.pricing } : o;
+      });
       this.onpOfferings = new Map(offerings.map((o) => [o.key, o]));
       this.onpModels = offerings.map((o) => {
-        const price = o.pricing.inputPerMtok === 0 && o.pricing.outputPerMtok === 0
-          ? 'Free' : `$${o.pricing.inputPerMtok}/$${o.pricing.outputPerMtok} per MTok`;
         const bits = [o.tier.toUpperCase(), o.nodeId];
         if (o.measured.ttftMsP50 != null) bits.push(`${o.measured.ttftMsP50}ms measured`);
         if (o.institutional) bits.push('institutional');
@@ -165,8 +178,8 @@ export class AiService {
           tier: 'free' as const,           // visibility gating stays with Surge tiers
           description: bits.join(' · '),
           supportsToolCalling: o.supports.includes('tool_calls'),
-          level: (o.tier === 'verified' ? 'smart' : 'quick') as ModelLevel,
-          costEstimate: price,
+          level: (o.tier === 'verified' || o.tier === 'attested' ? 'smart' : 'quick') as ModelLevel,
+          costEstimate: formatOnpPrice(o.pricing),
         };
       });
       this.onpLoadedAt = Date.now();
@@ -189,26 +202,75 @@ export class AiService {
     ]);
   }
 
-  private getOnpClient(modelKey: string): { client: OpenAI | null; modelId: string } {
+  private getOnpOffering(modelKey: string): OnpOffering {
     const key = modelKey.slice(4); // strip "onp:"
     const offering = this.onpOfferings.get(key);
     if (!offering) {
       throw new Error(`ONP offering ${key} is not in the current model list — refresh models first.`);
     }
-    let client = this.onpClients.get(key) ?? null;
+    return offering;
+  }
+
+  private getOnpClient(modelKey: string): ClientForModel {
+    const offering = this.getOnpOffering(modelKey);
+    let client = this.onpClients.get(offering.endpointBase) ?? null;
     if (!client) {
       client = new OpenAI({
         apiKey: this.settings.get('ai.onpApiKey') || 'not-required',
         baseURL: offering.endpointBase,
-        defaultHeaders: {
-          // ONP invocation profile: pin what we're calling and the price we saw
-          'onp-offering': key,
-          'onp-card-revision': offering.cardRevision,
-        },
+        // The SDK resends 409s unchanged; ONP's 409 needs a re-resolved pin instead (createCompletion).
+        maxRetries: 0,
       });
-      this.onpClients.set(key, client);
+      this.onpClients.set(offering.endpointBase, client);
     }
-    return { client, modelId: offering.bindingModelId };
+    return { client, modelId: offering.bindingModelId, requestOptions: this.onpPinHeaders(offering) };
+  }
+
+  /** ONP invocation profile: pin what we're calling and the price we saw — read fresh on every request. */
+  private onpPinHeaders(offering: OnpOffering): OpenAI.RequestOptions {
+    return {
+      headers: {
+        'onp-offering': offering.key,
+        'onp-card-revision': offering.cardRevision,
+      },
+    };
+  }
+
+  /**
+   * chat.completions.create with ONP-4 409 handling. `price_changed` → re-resolve the offering
+   * from the node's card and retry once — automatically only when the price did not go up (until
+   * a spend policy exists, the price the user was shown is the policy); a higher price is pinned
+   * and surfaced, so sending again is the user's acceptance. `offering-mismatch` is surfaced.
+   */
+  private async createCompletion(modelKey: string, target: ClientForModel, params: any): Promise<any> {
+    const client = target.client!;
+    try {
+      return await client.chat.completions.create(params, target.requestOptions);
+    } catch (err: any) {
+      if (!modelKey.startsWith('onp:') || err?.status !== 409) throw err;
+      // The SDK keeps only `{error: …}` bodies, so the node's problem+json title is lost. The card
+      // decides instead: a newer revision means price_changed, the same one offering-mismatch.
+      const offering = this.getOnpOffering(modelKey);
+      const fresh = await resolveCardOffering(offering);
+      if (!fresh) throw new Error(`${offering.nodeId} no longer offers ${offering.offeringId}. Refresh models.`);
+      if (fresh.cardRevision === offering.cardRevision) {
+        throw new Error(`${offering.nodeId} no longer serves ${offering.key} at this endpoint. Refresh models.`);
+      }
+      const repinned: OnpOffering = { ...offering, cardRevision: fresh.cardRevision, pricing: fresh.pricing };
+      this.onpOfferings.set(offering.key, repinned);
+      const model = this.onpModels.find((m) => m.id === modelKey);
+      if (model) model.costEstimate = formatOnpPrice(fresh.pricing);
+      if (onpPriceRaised(offering.pricing, fresh.pricing)) {
+        throw new Error(`${offering.modelName} on ${offering.nodeId} changed price from ${formatOnpPrice(offering.pricing)} `
+          + `to ${formatOnpPrice(fresh.pricing)}. Send again to accept the new price.`);
+      }
+      try {
+        return await client.chat.completions.create(params, this.onpPinHeaders(repinned));
+      } catch (retryErr: any) {
+        if (retryErr?.status !== 409) throw retryErr;
+        throw new Error(`${offering.nodeId} rejected the re-resolved pin for ${offering.key} (revision ${fresh.cardRevision}).`);
+      }
+    }
   }
 
   getAvailableModels(): AiModel[] {
@@ -234,7 +296,7 @@ export class AiService {
     }
   }
 
-  private getClientForModel(modelKey: string): { client: OpenAI | null; modelId: string } {
+  private getClientForModel(modelKey: string): ClientForModel {
     if (modelKey.startsWith('onp:')) return this.getOnpClient(modelKey);
     const modelId = this.getModelId(modelKey);
     switch (modelKey) {
@@ -254,12 +316,13 @@ export class AiService {
       return this.chatGemini(messages, modelKey);
     }
 
-    const { client, modelId } = this.getClientForModel(modelKey);
+    const target = this.getClientForModel(modelKey);
+    const { client, modelId } = target;
     if (!client) {
       throw new Error(`No client configured for model: ${modelKey}. Please set the API key in Settings.`);
     }
 
-    const response = await client.chat.completions.create({
+    const response = await this.createCompletion(modelKey, target, {
       model: modelId,
       messages: messages.map((m: any) => ({
         role: m.role,
@@ -301,7 +364,8 @@ export class AiService {
         return this.streamGemini(augmentedMessages, modelKey, callbacks, tools);
       }
 
-      const { client, modelId } = this.getClientForModel(modelKey);
+      const target = this.getClientForModel(modelKey);
+      const { client, modelId } = target;
       if (!client) {
         throw new Error(`No client configured for model: ${modelKey}. Please set the API key in Settings.`);
       }
@@ -331,7 +395,7 @@ export class AiService {
       let usePromptBasedTools = false;
 
       try {
-        stream = await client.chat.completions.create(params);
+        stream = await this.createCompletion(modelKey, target, params);
       } catch (err: any) {
         // For vLLM/local models that don't support native tool calling,
         // fall back to prompt-based tool calling

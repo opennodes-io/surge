@@ -46,7 +46,14 @@ servers/bookmarks-history-mcp/   standalone MCP server (stdio + HTTP), tsup
 ```
 
 Commands: `pnpm install` · `pnpm typecheck` (all packages) · `pnpm dev` (desktop) · `pnpm build`.
-Verification scripts for the ONP integration: `packages/core/test/verify-onp.ts` (a **local** registry with the fixture Echo node; bundle with esbuild, externals `@google/generative-ai @libsql/client @modelcontextprotocol/sdk openai`, then run with node) and `packages/core/test/verify-onp-gateway.mjs` (Step 0: Surge's vllm-custom provider against the `onp` gateway).
+Verification scripts for the ONP integration:
+- `packages/core/test/verify-onp-invocation.ts`: pins, 409 re-pin/retry, price-raise surfacing, offering-mismatch and streaming, against an in-process mock registry + node; no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-onp-invocation.ts`.
+- `packages/core/test/verify-onp.ts`: a **local** registry with the fixture Echo node. Bundle it with esbuild (externals `@google/generative-ai @libsql/client @modelcontextprotocol/sdk openai`), then run it with node.
+- `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
+
+**OpenAI SDK quirks on the ONP path:**
+- By default the SDK **resends 409s** with the same headers, so ONP clients are built with `maxRetries: 0`.
+- On an error, the SDK keeps only an `{error: …}` body, so a node's problem+json `title` (`price_changed` / `offering-mismatch`) never reaches `err.error`. After a 409, Surge re-fetches the card: a newer revision means price_changed, the same revision means offering-mismatch.
 
 **Driving the real app** (no Playwright in the repo): run `pnpm --filter @surge/desktop build`. Then from `apps/desktop` run `electron . --remote-debugging-port=9333 --user-data-dir=<tmp dir>`. Drive the renderer page (`…/renderer/index.html`) over CDP: `Runtime.evaluate` and `Page.captureScreenshot`; Node 24 has a global `WebSocket`. `--user-data-dir` keeps the user's real `surge-settings.json` and `surge.db` untouched. Call `window.surge.window.resize('expanded')` before screenshotting dropdowns.
 
@@ -56,16 +63,23 @@ Verification scripts for the ONP integration: `packages/core/test/verify-onp.ts`
 - **ONP discovery works against the hosted registry by default**, verified in the running app: 40 ONP models in the picker, each with the description "TIER · node · measured ms" and a price.
   - Settings → Advanced has an **OpenNodes Registry** field; *Test & Refresh* saves it and reloads the picker.
   - Registry search times out after 8s, so an unreachable registry falls back to the static models instead of hanging the picker.
-  - `estimateOnp()` pre-prices; invocation sends the pinned headers.
+  - `estimateOnp()` pre-prices.
   - Discovery still uses the hand-written `OnpRegistryClient`.
+- **Invocation is pinned per request and handles 409** (`AiService.createCompletion`, both `chat()` and `streamChat()`):
+  - Pin headers are built from the current offering on every call. OpenAI clients are cached per node endpoint, not per offering.
+  - On a 409, Surge re-resolves the offering from the node's card (`resolveCardOffering` in `onp/onp-client.ts`).
+  - Same or lower price: re-pin and retry exactly once.
+  - Higher price (or another currency): re-pin, update the picker price, and surface the change. The user sending again is the acceptance.
+  - Same revision: surfaced as offering-mismatch.
+  - A re-resolved pin survives model-list refreshes while the registry still lists an older revision (compared with `Date.parse`).
+  - Verified with the mock script and once against the live `demo-node.opennodes.io` using a deliberately stale pin.
+  - Card signatures aren't verified yet (that comes with `@opennodes/core`); only `card.node.id` is checked.
 - **Spec conformance gaps (open):**
-  - no `409 price_changed` handling
   - no receipt verification (`ONP-Receipt` is never read)
-  - no spend policy
-  - `OnpTier` lacks `attested` / `local` / `lan`, and `level` maps only `verified` → smart
+  - no spend policy. Until one exists, "the price the user was shown" is the only policy the 409 path applies.
   - basis fields are ignored: `hardware.basis`, `context_capped_from`, `data_policy` (`auto-private` will need that last one)
+- `OnpTier` includes `attested` / `local` / `lan`. `verified` and `attested` map to the Smart level.
 - **Bugs (open):**
-  - *Stale pin.* `AiService.onpClients` caches one OpenAI client per offering, with `onp-card-revision` baked into its default headers. `refreshOnpModels()` never clears that cache, so after a node revises its card Surge keeps sending the old revision and gets a 409 every time.
   - *Single global key.* `ai.onpApiKey` is sent to every node. It has no UI yet, so it's dormant; replace it with per-host keys before adding any key UI.
   - *Plaintext keys.* Provider keys sit in plaintext in `surge-settings.json`. `SecretStorePort` (`packages/core/src/ports/secret-store-port.ts`) exists, but the desktop doesn't implement it (Electron `safeStorage`).
   - *Clipped picker (UX, pre-existing).* In the compact idle window (680×160) the model dropdown is clipped; nothing resizes the window when it opens.
@@ -81,8 +95,7 @@ Verification scripts for the ONP integration: `packages/core/test/verify-onp.ts`
 
 ## What a good next session does
 
-1. **Make invocation safe.** Clear `onpClients` on refresh, or pin per request. Add the `409 price_changed` re-resolve-and-retry-once on the streaming path. Add `attested` / `local` / `lan` to `OnpTier`.
-2. **Receipts and policy.** Read `ONP-Receipt` via `.withResponse()`, fetch it by URL after streams, and verify JWS, amount and revision. Add a minimal spend policy (per-request ceiling + minimum tier, then a daily budget). Show tier, measured latency, price and the receipt after each call.
-3. **Swap in the published packages**, following "Using the published packages" above. Then add an "auto (advisor)" entry at the top of the model list that routes per prompt.
-4. **Per-host API keys** through `SecretStorePort` backed by `safeStorage`; retire `ai.onpApiKey`. Then a spend dashboard from receipts, and `auto-private` (local/LAN only) as a one-click privacy mode.
-5. **Launch kit.** Screenshots and a short demo for the OpenNodes launch kit (the "desktop client" section of the landing page is still a placeholder). Fix the clipped compact-mode picker first.
+1. **Receipts and policy.** Read `ONP-Receipt` via `.withResponse()`, fetch it by URL after streams, and verify JWS, amount and revision. Add a minimal spend policy (per-request ceiling + minimum tier, then a daily budget), and apply it in the 409 path too. Show tier, measured latency, price and the receipt after each call.
+2. **Swap in the published packages**, following "Using the published packages" above. This brings card signature verification into `resolveCardOffering`. Then add an "auto (advisor)" entry at the top of the model list that routes per prompt.
+3. **Per-host API keys** through `SecretStorePort` backed by `safeStorage`; retire `ai.onpApiKey`. Then a spend dashboard from receipts, and `auto-private` (local/LAN only) as a one-click privacy mode.
+4. **Launch kit.** Screenshots and a short demo for the OpenNodes launch kit (the "desktop client" section of the landing page is still a placeholder). Fix the clipped compact-mode picker first.
