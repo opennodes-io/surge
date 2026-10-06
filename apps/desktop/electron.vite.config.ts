@@ -4,8 +4,12 @@ import path from 'path';
 
 export default defineConfig({
   main: {
-    // @surge/core is a source-only workspace package: bundle it, but keep its
-    // runtime deps (libsql native, MCP SDK, openai, gemini) external.
+    // Only `dependencies` stay external and ship as node_modules: @libsql/client (native binding)
+    // and @opennodes/* (Node-only; @opennodes/core reads its schema relative to import.meta.url, so
+    // it must not be bundled). Everything else main imports — @surge/core (source-only), openai,
+    // the MCP SDK, Gemini — is a devDependency and is bundled here, resolved from the real tree.
+    // Shipping those as node_modules went wrong: electron-builder's pnpm collector put top-level
+    // versions where nested duplicates belong (see packaging/check-node-modules.cjs).
     plugins: [externalizeDepsPlugin({ exclude: ['@surge/core'] })],
     build: {
       outDir: 'dist/main',

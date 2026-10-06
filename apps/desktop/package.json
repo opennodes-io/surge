@@ -1,36 +1,43 @@
 {
   "name": "@surge/desktop",
-  "version": "1.0.0",
+  "productName": "Surge",
+  "version": "0.1.0",
   "license": "Apache-2.0",
-  "description": "Surge desktop — Electron shell for the Surge MCP client",
+  "description": "Surge — a desktop browser for MCP and the reference OpenNodes client",
+  "author": "The Surge Contributors",
+  "homepage": "https://github.com/opennodes-io/surge",
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "start": "electron .",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dist:win": "electron-vite build && electron-builder --win"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.0",
     "@libsql/client": "^0.14.0",
-    "@modelcontextprotocol/sdk": "^1.12.0",
     "@opennodes/cli": "^0.1.2",
     "@opennodes/core": "^0.1.1",
     "@opennodes/ollama-router": "^0.1.2",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
+  },
+  "devDependencies": {
+    "@google/generative-ai": "^0.24.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
     "@surge/core": "workspace:*",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.4.0",
+    "electron": "35.7.5",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^3.0.0",
     "openai": "^4.80.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.0"
-  },
-  "devDependencies": {
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@vitejs/plugin-react": "^4.4.0",
-    "electron": "^35.0.0",
-    "electron-vite": "^3.0.0",
+    "remark-gfm": "^4.0.0",
     "typescript": "^5.7.0",
     "vite": "^6.2.0"
   }

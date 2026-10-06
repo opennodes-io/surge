@@ -1,0 +1,42 @@
+# Installers for the desktop app. `pnpm --filter @surge/desktop dist:win` builds the app with
+# electron-vite, then packages it here into release/. Only `dependencies` are shipped as node_modules:
+# @libsql/client and @opennodes/*, which can't be bundled, plus ajv and ajv-formats. Those two are
+# @opennodes/core's dependencies, listed directly because electron-builder's pnpm collector dropped
+# them once the MCP SDK (which also uses ajv) became a bundled devDependency. Everything else is
+# bundled by electron-vite and listed as a devDependency.
+appId: io.opennodes.surge
+productName: Surge
+copyright: Copyright 2026 The Surge Contributors
+# One-click installers name the install folder after package.json "name"; "@surge/desktop" became
+# %LOCALAPPDATA%\Programs\@surgedesktop. The packaged app otherwise uses only productName and appId.
+extraMetadata:
+  name: surge
+
+# Fails the build if a shipped node_modules package differs from the version Node resolves in the
+# source tree (electron-builder's pnpm collector gets nested duplicates wrong under node-linker=hoisted).
+afterPack: packaging/check-node-modules.cjs
+
+directories:
+  output: release
+  buildResources: packaging
+
+files:
+  - dist/**
+  - resources/**
+  - package.json
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+
+# Per-user, one-click install into %LOCALAPPDATA%\Programs\Surge (no admin prompt). User data in
+# %APPDATA%\Surge is kept on uninstall.
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+  artifactName: Surge-Setup-${version}.${ext}
+
+# Releases are uploaded deliberately, never as a side effect of a build.
+publish: null

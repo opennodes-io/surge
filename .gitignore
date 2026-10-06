@@ -6,6 +6,7 @@ node_modules/
 dist/
 out/
 build/
+release/
 *.tsbuildinfo
 
 # Electron native rebuilds
