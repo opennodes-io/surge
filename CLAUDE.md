@@ -184,7 +184,10 @@ Verification scripts for the ONP integration:
 
 ## What a good next session does
 
-1. **Ship the launch kit.** Copy `docs/launch-kit/media/` into the opennodes repo (`site/media/`, and the GIF to `docs/media/`) and replace the Surge entry in `site/index.html` with the kit's snippet. That repo is public, so it's the owner's call, outside this repo. Then decide the license and open the repository for the first public build.
+1. **Ship the launch kit.** The landing-page change is prepared and committed **locally, not pushed**, in a clone at `D:/Projects/AI/Projects/opennodes`, on branch `site/surge-desktop-client` (`ddf1499`).
+   - It replaces the Surge entry in `site/index.html` (hero `<picture>` in `site/media/`) and refreshes the README Ecosystem bullet with `docs/media/surge-demo.gif`. It was previewed in light and dark.
+   - Pushing it, or merging, is the owner's call. Merging to `main` deploys opennodes.io (Cloudflare Workers Builds) and publishes pre-release screenshots.
+   - Then decide the license and open this repository for the first public build.
 2. **Follow-ups:**
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
