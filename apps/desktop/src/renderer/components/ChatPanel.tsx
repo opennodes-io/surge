@@ -18,6 +18,12 @@ const RECEIPT_LABEL: Record<OnpCall['receipt'], string> = {
 // says. Registry-measured and this-call latency are labeled separately — never blended.
 const OnpCallLine: React.FC<{ call: OnpCall }> = ({ call }) => (
   <div className="onp-call" title={`${call.offering} · card ${call.cardRevision}${call.receiptId ? ` · ${call.receiptId}` : ''}`}>
+    {call.advisor && (
+      <span className="onp-advisor" title={[...call.advisor.reasons, ...call.advisor.skipped.map(s => `skipped ${s}`)].join('\n')}>
+        auto · {call.advisor.taskClass} → {call.modelName}{call.advisor.reasons[0] ? ` (${call.advisor.reasons[0]})` : ''}
+        {call.advisor.skipped.length > 0 && ` · ${call.advisor.skipped.length} skipped`}
+      </span>
+    )}
     <span>{call.tier.toUpperCase()}</span>
     <span>{call.nodeId}</span>
     {call.registryTtftMsP50 != null && <span>p50 {call.registryTtftMsP50}ms (registry)</span>}

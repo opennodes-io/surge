@@ -1,7 +1,7 @@
 // ONP-5 §5 usage receipts: verify the node-signed JWS and check amount = usage × pinned price.
 // Ed25519 via WebCrypto, so this runs unchanged in Electron, the mobile shell and browsers
 // (@opennodes/core's verifier is Node-only).
-import { ONP_FETCH_TIMEOUT_MS, type OnpOffering, type OnpPricing } from './onp-client.js';
+import { ONP_FETCH_TIMEOUT_MS, type OnpOffering, type OnpPricing } from './onp-offerings.js';
 
 export interface OnpReceipt {
   receipt_id: string;

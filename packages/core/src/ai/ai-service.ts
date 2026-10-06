@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import type { SettingsPort } from '../ports/index.js';
 import type { ToolDefinition } from '../mcp/mcp-manager.js';
 import {
-  OnpRegistryClient, ONP_DEFAULT_REGISTRY, resolveCardOffering, onpPriceRaised, formatOnpPrice, verifyOnpReceipt,
+  OnpRegistryClient, ONP_DEFAULT_REGISTRY, ONP_AUTO_MODEL, adviseOnp, onpPriceRaised, formatOnpPrice, verifyOnpReceipt,
   checkOnpPolicy, normalizeOnpPolicy, onpRequestCeiling,
   type OnpOffering, type OnpTier, type OnpReceiptStatus, type OnpSpendPolicy,
 } from '../onp/index.js';
@@ -36,6 +36,8 @@ export interface OnpCallRecord {
   receiptId?: string;
   usage?: { promptTokens: number; completionTokens: number };
   amount?: { currency: string; value: number };
+  /** Set when the Auto model routed the call: why this node, and which picks failed first. */
+  advisor?: { taskClass: string; score: number; reasons: string[]; considered: number; eligible: number; skipped: string[] };
 }
 
 /** What an ONP call was pinned to, kept until its receipt is settled. */
@@ -44,7 +46,12 @@ interface OnpCallContext {
   receiptRef: string | null;     // ONP-Receipt header: inline JWS or URL
   ceiling: number;               // most the call could cost; counted when no verified receipt says otherwise
   startedAt: number;
+  advisor?: OnpCallRecord['advisor'];
 }
+
+// Nominal request for marking listed offerings the policy would block (the real check, per
+// request, uses the actual prompt size).
+const NOMINAL_INPUT_TOKENS = 1000;
 
 interface StreamCallbacks {
   onToken: (token: string) => void;
@@ -112,6 +119,7 @@ export class AiService {
   private onpClients: Map<string, OpenAI> = new Map(); // by endpoint base; pins go per request
   private onpLoadedAt = 0;
   private onpCalls: OnpCallRecord[] = [];              // this session's settled calls (spend dashboard)
+  private onpPool: string[] = [];                      // admitted (community+) offerings the Auto model routes over
 
   constructor(settings: SettingsPort) {
     this.settings = settings;
@@ -181,6 +189,7 @@ export class AiService {
     this.onpOfferings.clear();
     this.onpClients.clear();
     this.onpModels = [];
+    this.onpPool = [];
     this.onpLoadedAt = 0;
   }
 
@@ -188,16 +197,33 @@ export class AiService {
   async refreshOnpModels(): Promise<void> {
     if (!this.onpRegistry) return;
     try {
-      const listed = await this.onpRegistry.searchOfferings({ modality: 'text', sort: 'rank', limit: 40 });
+      const [listed, admitted] = await Promise.all([
+        this.onpRegistry.searchOfferings({ modality: 'text', sort: 'rank', limit: 40 }),
+        // The Auto model's pool: admitted nodes serve without an API key; imported listings don't.
+        this.onpRegistry.searchOfferings({ modality: 'text', tier: 'community', sort: 'rank', limit: 100 }).catch(() => []),
+      ]);
       // A pin re-resolved from the node's card (createCompletion) outranks a registry that is still
       // indexing an older revision; revisions are strictly increasing ISO-8601 timestamps (ONP-2).
-      const offerings = listed.map((o) => {
+      const keepPin = (o: OnpOffering): OnpOffering => {
         const known = this.onpOfferings.get(o.key);
         return known && Date.parse(known.cardRevision) > Date.parse(o.cardRevision)
           ? { ...o, cardRevision: known.cardRevision, pricing: known.pricing } : o;
-      });
-      this.onpOfferings = new Map(offerings.map((o) => [o.key, o]));
-      this.onpModels = offerings.map((o) => {
+      };
+      const offerings = listed.map(keepPin);
+      const pool = admitted.map(keepPin);
+      this.onpOfferings = new Map([...pool, ...offerings].map((o) => [o.key, o]));
+      this.onpPool = pool.map((o) => o.key);
+      const auto: AiModel[] = pool.length ? [{
+        id: ONP_AUTO_MODEL,
+        name: 'Auto (OpenNodes advisor)',
+        provider: 'onp',
+        tier: 'free',
+        description: `Picks one of ${pool.length} admitted node${pool.length === 1 ? '' : 's'} per prompt · ranked on this device, the prompt never leaves it`,
+        supportsToolCalling: pool.some((o) => o.supports.includes('tool_calls')),
+        level: 'smart',
+        costEstimate: 'Within your policy',
+      }] : [];
+      this.onpModels = [...auto, ...offerings.map((o) => {
         const bits = [o.tier.toUpperCase(), o.nodeId];
         if (o.measured.ttftMsP50 != null) bits.push(`${o.measured.ttftMsP50}ms measured`);
         if (o.institutional) bits.push('institutional');
@@ -212,7 +238,7 @@ export class AiService {
           level: (o.tier === 'verified' || o.tier === 'attested' ? 'smart' : 'quick') as ModelLevel,
           costEstimate: formatOnpPrice(o.pricing),
         };
-      });
+      })];
       this.onpLoadedAt = Date.now();
     } catch {
       // registry unreachable — keep whatever we had; the static model list still works
@@ -222,12 +248,20 @@ export class AiService {
   /** Static providers plus live ONP registry models (refreshed at most once a minute). */
   async listModels(): Promise<AiModel[]> {
     if (Date.now() - this.onpLoadedAt > 60_000) await this.refreshOnpModels();
-    return [...this.getAvailableModels(), ...this.onpModels];
+    // Marked live, so a policy change shows on the next listing without a registry refresh.
+    const policy = this.getOnpPolicy();
+    const bounds = { estInputTokens: NOMINAL_INPUT_TOKENS, maxTokens: 4096, spentTodayUsd: this.getOnpSpentToday() };
+    const onp = this.onpModels.map((m) => {
+      const offering = this.onpOfferings.get(m.id.slice(4));
+      return offering && checkOnpPolicy(offering, policy, bounds)
+        ? { ...m, description: `${m.description} · blocked by your spend policy` } : m;
+    });
+    return [...this.getAvailableModels(), ...onp];
   }
 
   /** Pre-price a prompt against an ONP model (enforceable registry estimate). */
   async estimateOnp(modelKey: string, estInputTokens = 1000, estOutputTokens = 300) {
-    if (!modelKey.startsWith('onp:') || !this.onpRegistry) return null;
+    if (!modelKey.startsWith('onp:') || modelKey === ONP_AUTO_MODEL || !this.onpRegistry) return null;
     return this.onpRegistry.estimate([
       { offering: modelKey.slice(4), est_input_tokens: estInputTokens, est_output_tokens: estOutputTokens },
     ]);
@@ -242,19 +276,18 @@ export class AiService {
     return offering;
   }
 
-  private getOnpClient(modelKey: string): { client: OpenAI | null; modelId: string } {
-    const offering = this.getOnpOffering(modelKey);
-    let client = this.onpClients.get(offering.endpointBase) ?? null;
+  private getOnpClient(offering: OnpOffering): OpenAI {
+    let client = this.onpClients.get(offering.endpointBase);
     if (!client) {
       client = new OpenAI({
         apiKey: this.settings.get('ai.onpApiKey') || 'not-required',
         baseURL: offering.endpointBase,
-        // The SDK resends 409s unchanged; ONP's 409 needs a re-resolved pin instead (createCompletion).
+        // The SDK resends 409s unchanged; ONP's 409 needs a re-resolved pin instead (invokeOnp).
         maxRetries: 0,
       });
       this.onpClients.set(offering.endpointBase, client);
     }
-    return { client, modelId: offering.bindingModelId };
+    return client;
   }
 
   getOnpPolicy(): OnpSpendPolicy {
@@ -305,6 +338,7 @@ export class AiService {
       receiptId: r?.receipt_id,
       usage: r?.usage ? { promptTokens: r.usage.prompt_tokens, completionTokens: r.usage.completion_tokens } : undefined,
       amount: r?.amount,
+      advisor: ctx.advisor,
     };
     this.onpCalls.push(record);
     return record;
@@ -321,33 +355,63 @@ export class AiService {
   }
 
   /**
-   * chat.completions.create; for ONP models, with the spend policy checked before every request
-   * and ONP-4 409 handling: re-resolve the offering from the node's card, re-apply the policy at
-   * the new price, and retry once — or surface why not. `offering-mismatch` is surfaced.
+   * chat.completions.create for any model. ONP models go through invokeOnp; the Auto model asks
+   * the advisor for ranked picks and falls back down the list when a pick is blocked by the
+   * policy or fails before its response starts (the lab-style nodes are often offline).
    */
-  private async createCompletion(modelKey: string, client: OpenAI, params: any): Promise<{ data: any; onp?: OnpCallContext }> {
-    if (!modelKey.startsWith('onp:')) return { data: await client.chat.completions.create(params) };
+  private async createCompletion(modelKey: string, client: OpenAI | null, params: any): Promise<{ data: any; onp?: OnpCallContext }> {
+    if (!modelKey.startsWith('onp:')) return { data: await client!.chat.completions.create(params) };
+    if (modelKey !== ONP_AUTO_MODEL) return this.invokeOnp(this.getOnpOffering(modelKey), params);
+
+    const pool = this.onpPool.map((k) => this.onpOfferings.get(k)).filter((o): o is OnpOffering => !!o);
+    const advice = adviseOnp(pool, params.messages ?? [], this.getOnpPolicy());
+    const skipped: string[] = [];
+    for (const pick of advice.picks) {
+      const offering = this.onpOfferings.get(pick.key);
+      if (!offering) continue;
+      const advisor = {
+        taskClass: advice.features.task_class, score: pick.score, reasons: pick.reasons,
+        considered: advice.considered, eligible: advice.eligible, skipped: [...skipped],
+      };
+      try {
+        return await this.invokeOnp(offering, params, advisor);
+      } catch (err: any) {
+        skipped.push(`${pick.key}: ${err?.message ?? err}`);
+      }
+    }
+    throw new Error(advice.picks.length
+      ? `Auto could not place this request on any admitted node — ${skipped.join('; ')}`
+      : `Auto found no admitted node for this request (${advice.eligible} of ${advice.considered} fit the task and your policy).`);
+  }
+
+  /**
+   * One ONP invocation: the spend policy checked before every request, pinned headers, and
+   * ONP-4 409 handling — re-resolve the offering from the node's verified card, re-apply the
+   * policy at the new price, and retry once, or surface why not. `offering-mismatch` is surfaced.
+   */
+  private async invokeOnp(offering: OnpOffering, params: any, advisor?: OnpCallRecord['advisor']): Promise<{ data: any; onp: OnpCallContext }> {
+    const client = this.getOnpClient(offering);
     const startedAt = Date.now();
-    const send = async (offering: OnpOffering, preface?: string) => {
-      const ceiling = this.enforceOnpPolicy(offering, params, preface);
-      const { data, response } = await client.chat.completions.create(params, this.onpPinHeaders(offering)).withResponse();
-      return { data, onp: { offering, receiptRef: response.headers.get('onp-receipt'), ceiling, startedAt } };
+    const send = async (pinned: OnpOffering, preface?: string) => {
+      const ceiling = this.enforceOnpPolicy(pinned, params, preface);
+      const body = { ...params, model: pinned.bindingModelId };
+      const { data, response } = await client.chat.completions.create(body, this.onpPinHeaders(pinned)).withResponse();
+      return { data, onp: { offering: pinned, receiptRef: response.headers.get('onp-receipt'), ceiling, startedAt, advisor } };
     };
-    const offering = this.getOnpOffering(modelKey);
     try {
       return await send(offering);
     } catch (err: any) {
       if (err?.status !== 409) throw err;
       // The SDK keeps only `{error: …}` bodies, so the node's problem+json title is lost. The card
       // decides instead: a newer revision means price_changed, the same one offering-mismatch.
-      const fresh = await resolveCardOffering(offering);
+      const fresh = await this.onpRegistry!.resolveCardOffering(offering);
       if (!fresh) throw new Error(`${offering.nodeId} no longer offers ${offering.offeringId}. Refresh models.`);
       if (fresh.cardRevision === offering.cardRevision) {
         throw new Error(`${offering.nodeId} no longer serves ${offering.key} at this endpoint. Refresh models.`);
       }
       const repinned: OnpOffering = { ...offering, cardRevision: fresh.cardRevision, pricing: fresh.pricing };
       this.onpOfferings.set(offering.key, repinned);
-      const model = this.onpModels.find((m) => m.id === modelKey);
+      const model = this.onpModels.find((m) => m.id === `onp:${offering.key}`);
       if (model) model.costEstimate = formatOnpPrice(fresh.pricing);
       const preface = onpPriceRaised(offering.pricing, fresh.pricing)
         ? `${offering.modelName} on ${offering.nodeId} changed price from ${formatOnpPrice(offering.pricing)} to ${formatOnpPrice(fresh.pricing)}. `
@@ -384,8 +448,8 @@ export class AiService {
     }
   }
 
+  // ONP models resolve their client per offering in invokeOnp.
   private getClientForModel(modelKey: string): { client: OpenAI | null; modelId: string } {
-    if (modelKey.startsWith('onp:')) return this.getOnpClient(modelKey);
     const modelId = this.getModelId(modelKey);
     switch (modelKey) {
       case 'groq-llama': return { client: this.groqClient, modelId };
@@ -405,7 +469,7 @@ export class AiService {
     }
 
     const { client, modelId } = this.getClientForModel(modelKey);
-    if (!client) {
+    if (!client && !modelKey.startsWith('onp:')) {
       throw new Error(`No client configured for model: ${modelKey}. Please set the API key in Settings.`);
     }
 
@@ -421,7 +485,7 @@ export class AiService {
 
     return {
       content: response.choices[0]?.message?.content || '',
-      model: modelId,
+      model: onp ? onp.offering.bindingModelId : modelId,
       ...(onp ? { onp: await this.settleOnp(onp) } : {}),
     };
   }
@@ -453,11 +517,11 @@ export class AiService {
       }
 
       const { client, modelId } = this.getClientForModel(modelKey);
-      if (!client) {
+      if (!client && !modelKey.startsWith('onp:')) {
         throw new Error(`No client configured for model: ${modelKey}. Please set the API key in Settings.`);
       }
 
-      // Build OpenAI request params
+      // Build OpenAI request params (ONP sets `model` per offering in invokeOnp)
       const params: any = {
         model: modelId,
         messages: augmentedMessages.map((m) => {
@@ -525,7 +589,7 @@ export class AiService {
           delete params.tools;
           delete params.tool_choice;
           usePromptBasedTools = true;
-          stream = await client.chat.completions.create(params);
+          stream = await client!.chat.completions.create(params); // vllm/ollama: client checked above
         } else {
           throw err;
         }

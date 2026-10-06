@@ -167,3 +167,4 @@
 .onp-receipt.missing,
 .onp-receipt.unverified { color: var(--accent-orange); }
 .onp-receipt.invalid { color: var(--accent-red); }
+.onp-advisor { color: var(--text-secondary); flex-basis: 100%; }

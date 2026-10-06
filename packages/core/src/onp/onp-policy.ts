@@ -1,6 +1,6 @@
 // ONP-5 §3 client spend policy, enforced before every invocation (a 409 retry included):
 // per-request ceiling, per-day budget, price cap, allowed schemes, minimum trust tier.
-import { formatOnpPrice, type OnpOffering, type OnpTier } from './onp-client.js';
+import { formatOnpPrice, type OnpOffering, type OnpTier } from './onp-offerings.js';
 import { costForUsage } from './onp-receipts.js';
 
 export interface OnpSpendPolicy {
