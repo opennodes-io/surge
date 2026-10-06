@@ -17,6 +17,7 @@ declare global {
         onStreamToken: (callback: (token: string) => void) => () => void;
         onStreamEnd: (callback: () => void) => () => void;
         onStreamError: (callback: (error: string) => void) => () => void;
+        onOnpCall: (callback: (call: OnpCall) => void) => () => void;
         getModels: () => Promise<AiModel[]>;
       };
       mcp: {
@@ -89,6 +90,24 @@ export interface ChatMessage {
   content: string;
   tool_call_id?: string;
   name?: string;
+  onpCalls?: OnpCall[];        // OpenNodes calls behind this reply (one per model round)
+}
+
+// Mirrors @surge/core's OnpCallRecord: one settled OpenNodes call
+export interface OnpCall {
+  offering: string;
+  modelName: string;
+  nodeId: string;
+  tier: string;
+  registryTtftMsP50?: number;  // registry-measured, not this call
+  durationMs: number;          // this call, measured by Surge
+  price: string;
+  cardRevision: string;
+  receipt: 'verified' | 'missing' | 'unverified' | 'invalid';
+  reason?: string;
+  receiptId?: string;
+  usage?: { promptTokens: number; completionTokens: number };
+  amount?: { currency: string; value: number };
 }
 
 export type ModelLevel = 'quick' | 'smart' | 'best';

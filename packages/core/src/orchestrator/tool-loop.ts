@@ -1,4 +1,4 @@
-import type { AiService, PendingToolCall, ChatMessageWithTools } from '../ai/ai-service.js';
+import type { AiService, PendingToolCall, ChatMessageWithTools, OnpCallRecord } from '../ai/ai-service.js';
 import type { ToolDefinition } from '../mcp/mcp-manager.js';
 
 export interface ToolExecutionResult {
@@ -28,6 +28,8 @@ export interface ToolLoopCallbacks {
   onToken: (token: string) => void;
   onToolCallStart: (info: ToolCallStartInfo) => void;
   onToolCallResult: (info: ToolCallResultInfo) => void;
+  /** An ONP call settled (receipt checked, spend counted) — once per model round. */
+  onOnpCall?: (call: OnpCallRecord) => void;
   onEnd: () => void;
   onError: (message: string) => void;
 }
@@ -64,6 +66,8 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<void> {
         model,
         {
           onToken: (token: string) => callbacks.onToken(token),
+
+          onOnpCall: (call) => callbacks.onOnpCall?.(call),
 
           onToolCall: async (toolCalls: PendingToolCall[]) => {
             round++;

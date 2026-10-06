@@ -150,3 +150,20 @@
   0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
   40% { transform: scale(1); opacity: 1; }
 }
+
+/* OpenNodes call line under a reply: node, pinned price, receipt status */
+.onp-call {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.onp-receipt.verified { color: var(--accent-green); }
+.onp-receipt.missing,
+.onp-receipt.unverified { color: var(--accent-orange); }
+.onp-receipt.invalid { color: var(--accent-red); }

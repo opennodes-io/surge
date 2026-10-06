@@ -7,7 +7,7 @@ import WebBrowserBar from './components/WebBrowserBar';
 import McpWebPanel from './components/McpWebPanel';
 import AgentApprovalModal from './components/AgentApprovalModal';
 import { IconStar, IconBolt, IconGlobe, IconSettings, IconMinus, IconX, IconMaximize, IconRestore } from './components/Icons';
-import type { AppMode, ChatMessage, AiModel, McpWebCapabilities, McpWebConnectResult, McpBDetectResult, WebAgentSpec } from './types';
+import type { AppMode, ChatMessage, AiModel, OnpCall, McpWebCapabilities, McpWebConnectResult, McpBDetectResult, WebAgentSpec } from './types';
 import type { ToolCallData } from './components/McpToolCallBlock';
 import './styles/app.css';
 
@@ -199,14 +199,18 @@ const App: React.FC = () => {
     // Use a flag to ensure onEnd only processes once (prevents duplication from multi-round tool calls)
     let finished = false;
     let accumulatedContent = '';
+    const onpCalls: OnpCall[] = [];
 
     const removeToken = window.surge.ai.onStreamToken((token) => {
       accumulatedContent += token;
       setStreamContent(prev => prev + token);
     });
 
+    const removeOnpCall = window.surge.ai.onOnpCall((call) => { onpCalls.push(call); });
+
     const cleanup = () => {
       removeToken();
+      removeOnpCall();
       removeEnd();
       removeError();
     };
@@ -215,8 +219,8 @@ const App: React.FC = () => {
       if (finished) return; // Prevent duplicate processing
       finished = true;
       cleanup();
-      if (accumulatedContent) {
-        setMessages(msgs => [...msgs, { role: 'assistant', content: accumulatedContent }]);
+      if (accumulatedContent || onpCalls.length) {
+        setMessages(msgs => [...msgs, { role: 'assistant', content: accumulatedContent, onpCalls: onpCalls.length ? onpCalls : undefined }]);
       }
       window.surge?.history?.record({ kind: 'chat', title: query.slice(0, 80) }).catch(() => {});
       setStreamContent('');
@@ -227,7 +231,7 @@ const App: React.FC = () => {
       if (finished) return;
       finished = true;
       cleanup();
-      setMessages(msgs => [...msgs, { role: 'assistant', content: `Error: ${error}` }]);
+      setMessages(msgs => [...msgs, { role: 'assistant', content: `Error: ${error}`, onpCalls: onpCalls.length ? onpCalls : undefined }]);
       setStreamContent('');
       setIsStreaming(false);
     });

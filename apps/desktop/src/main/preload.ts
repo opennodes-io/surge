@@ -37,6 +37,11 @@ contextBridge.exposeInMainWorld('surge', {
       ipcRenderer.on('ai:streamError', handler);
       return () => ipcRenderer.removeListener('ai:streamError', handler);
     },
+    onOnpCall: (callback: (call: any) => void) => {
+      const handler = (_event: any, call: any) => callback(call);
+      ipcRenderer.on('ai:onpCall', handler);
+      return () => ipcRenderer.removeListener('ai:onpCall', handler);
+    },
     getModels: () => ipcRenderer.invoke('ai:getModels'),
   },
 
