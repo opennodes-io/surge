@@ -374,7 +374,20 @@ export class BrowserService {
   async executeTool(toolName: string, args: Record<string, any>): Promise<string> {
     const wc = this.wc;
     if (!wc) return 'Error: No browser view is currently active.';
+    // executeJavaScript on a view that never loaded a page never settles: answer instead of hanging the chat.
+    if (!wc.getURL() && toolName !== 'navigateTo') {
+      return 'Error: No page is open in the browser. Use browser__navigateTo first, or answer without the page.';
+    }
+    // Every tool answers within its own wait plus a margin, so a stuck page can't stall the tool loop.
+    const limitMs = Math.max(15_000, Number(args.timeoutMs ?? 0) + 5_000);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<string>((resolve) => {
+      timer = setTimeout(() => resolve(`Error: browser__${toolName} did not finish within ${limitMs / 1000}s.`), limitMs);
+    });
+    return Promise.race([this.dispatchTool(toolName, args), timeout]).finally(() => clearTimeout(timer));
+  }
 
+  private async dispatchTool(toolName: string, args: Record<string, any>): Promise<string> {
     switch (toolName) {
       // Core
       case 'getPageContent': return this.getPageContent(args.maxLength ?? 8000);

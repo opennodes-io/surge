@@ -96,6 +96,7 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<void> {
               callbacks.onToolCallStart({ id: tc.id, name: tc.functionName, args: tc.arguments });
 
               let resultText: string;
+              const startedAt = Date.now();
               try {
                 const result = await executeTool(tc);
                 resultText = result.resultText;
@@ -105,7 +106,7 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<void> {
                   serverId: result.serverId || 'unknown',
                   status: 'success',
                   result: result.rawContent && result.rawContent.length > 0 ? result.rawContent : resultText,
-                  durationMs: 0,
+                  durationMs: Date.now() - startedAt,
                   args: tc.arguments,
                 });
               } catch (err: any) {
@@ -116,7 +117,7 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<void> {
                   serverId: 'unknown',
                   status: 'error',
                   result: resultText,
-                  durationMs: 0,
+                  durationMs: Date.now() - startedAt,
                   args: tc.arguments,
                 });
               }

@@ -19,6 +19,9 @@
   gap: var(--space-sm);
   padding: var(--space-sm) var(--space-md);
   transition: all var(--transition-base);
+  /* Its backdrop-filter makes it the stacking context of the model list; lift it above the hints row. */
+  position: relative;
+  z-index: 20;
 }
 
 .search-bar.glow {
@@ -90,6 +93,11 @@
 }
 
 /* Dropdown */
+/* Opaque (beats .glass-panel): a nested backdrop-filter can't blur what sits outside the search bar. */
+.model-dropdown.glass-panel {
+  background: var(--bg-secondary);
+}
+
 .model-dropdown {
   position: fixed;
   top: auto;
@@ -151,6 +159,8 @@
   font-size: var(--text-sm);
   font-weight: 700;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .model-level-current {
@@ -224,6 +234,8 @@
   font-size: var(--text-sm);
   font-weight: 600;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .model-option-desc {

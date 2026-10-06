@@ -305,3 +305,6 @@
   color: var(--text-primary);
   border-color: var(--accent-cyan);
 }
+
+/* Server names like "Browser (page tools)" stay on one line in the narrow browser-mode sidebar */
+.tcb-server { white-space: nowrap; max-width: 14em; overflow: hidden; text-overflow: ellipsis; }
