@@ -72,16 +72,18 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
   };
 
   // Core re-validates the stored policy (normalizeOnpPolicy); blanks and junk fall back to safe values.
-  const savePolicy = (next: typeof policy) => {
+  const savePolicy = async (next: typeof policy) => {
     setPolicy(next);
     const usd = (v: string) => (Number(v) >= 0 ? Number(v) : 0);
-    save('onp.policy', {
+    await save('onp.policy', {
       maxRequestUsd: usd(next.maxRequestUsd),
       dailyBudgetUsd: usd(next.dailyBudgetUsd),
       maxPricePerMtok: next.maxPricePerMtok.trim() === '' ? null : usd(next.maxPricePerMtok),
       minTier: next.minTier,
       schemes: next.schemes,
     });
+    // The model list marks offerings the policy blocks; reload it so the picker reflects the change.
+    onModelsChanged(await window.surge.ai.getModels());
   };
 
   // Test vLLM connection and discover available models

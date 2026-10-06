@@ -108,6 +108,7 @@ export interface OnpCall {
   receiptId?: string;
   usage?: { promptTokens: number; completionTokens: number };
   amount?: { currency: string; value: number };
+  advisor?: { taskClass: string; score: number; reasons: string[]; considered: number; eligible: number; skipped: string[] };
 }
 
 export type ModelLevel = 'quick' | 'smart' | 'best';

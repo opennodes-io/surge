@@ -10,10 +10,14 @@
 //     invalid, none → missing; spend counts verified amounts, or the ceiling when unverifiable
 //  7. spend policy (ONP-5 §3): spending off by default (paid blocked, free runs), minimum tier,
 //     schemes, daily budget — all before any request reaches the node
-//  8. attested offerings land in the Smart level
+//  8. attested offerings land in the Smart level; offerings the policy blocks are marked
+//  9. the 409 path re-resolves through @opennodes/cli: a card that fails ONP-2 signature
+//     verification is surfaced, never trusted
+// 10. Auto (advisor): ranks the admitted pool locally, falls back past a pick that fails, records why
 // Run: pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-onp-invocation.ts
 import http from 'node:http';
-import { generateKeyPairSync, randomUUID, sign, type KeyObject } from 'node:crypto';
+import { randomUUID, sign, type KeyObject } from 'node:crypto';
+import { generateKeypair, signCard, validateCard } from '@opennodes/core';
 import type { AddressInfo } from 'node:net';
 import { AiService, type OnpCallRecord, type PendingToolCall } from '../src/ai/ai-service.js';
 import type { SettingsPort } from '../src/ports/index.js';
@@ -31,12 +35,12 @@ const price = (input: number, output: number): Pricing =>
   ({ currency: 'USD', input_per_mtok: input, output_per_mtok: output, schemes: input || output ? ['prepaid'] : ['free'] });
 const cost = (p: Pricing) => Math.round((p.input_per_mtok * USAGE.prompt_tokens / 1e6 + p.output_per_mtok * USAGE.completion_tokens / 1e6) * 1e6) / 1e6;
 
-const nodeKey = generateKeyPairSync('ed25519');
-const strangerKey = generateKeyPairSync('ed25519');
+const nodeKey = generateKeypair();
+const strangerKey = generateKeypair();
 
 type ReceiptMode = 'ok' | 'none' | 'inflate' | 'foreign-key' | 'wrong-revision';
 // What the node currently serves vs. what the registry has indexed (they can disagree: registry lag).
-const node = { revision: rev(1), pricing: price(1, 2), servesOffering: KEY, receipt: 'ok' as ReceiptMode };
+const node = { revision: rev(1), pricing: price(1, 2), servesOffering: KEY, receipt: 'ok' as ReceiptMode, cardTampered: false };
 const registry = { revision: rev(1), pricing: price(1, 2), tier: 'attested' };
 const posts: Array<{ revision: string | undefined; offering: string | undefined }> = [];
 const streamedReceipts = new Map<string, string>();
@@ -77,17 +81,32 @@ async function main() {
   let pass = true;
   const check = (name: string, cond: boolean, extra = '') => { console.log(`${cond ? '✓' : '✗'} ${name}${extra ? ` — ${extra}` : ''}`); pass = pass && cond; };
 
+  // A schema-valid, signed ONP-2 card for the node's current state (signed with @opennodes/core).
+  const buildCard = (base: string) => signCard({
+    onp: '0.1', revision: node.revision,
+    node: { id: NODE_ID, name: 'Test node', operator: { name: 'Surge tests' } },
+    endpoints: { openai: `${base}/v1`, health: `${base}/onp/health` },
+    offerings: [{
+      offering_id: OFFERING, modality: 'text',
+      model: { name: 'Echo', artifact: 'urn:proprietary:test:echo' },
+      serving: { context_window: 8192, max_output_tokens: 4096, supports: ['streaming'] },
+      binding: { profile: 'onp.openai.chat/v1', model_id: 'echo' },
+      pricing: node.pricing,
+    }],
+    payment: { schemes: [{ scheme: 'prepaid' }, { scheme: 'free' }] },
+  }, nodeKey.privateKey);
+
   const mockNode = await listen((req, res) => {
     if (req.method === 'GET' && req.url === '/.well-known/open-node.json') {
+      const card = buildCard(mockNode.base);
+      // Tampered: the price changed after signing — the signature no longer covers the content.
+      if (node.cardTampered) card.offerings[0].pricing = price(0, 0);
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({
-        onp: '0.1', revision: node.revision, node: { id: NODE_ID },
-        offerings: [{ offering_id: OFFERING, pricing: node.pricing }],
-      }));
+      return res.end(JSON.stringify(card));
     }
     if (req.method === 'GET' && req.url === '/.well-known/jwks.json') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ keys: [{ ...nodeKey.publicKey.export({ format: 'jwk' }), kid: 'onp-1' }] }));
+      return res.end(JSON.stringify({ keys: [{ ...nodeKey.publicJwk, kid: 'onp-1' }] }));
     }
     if (req.method === 'GET' && req.url?.startsWith('/onp/receipts/')) {
       const jws = streamedReceipts.get(req.url.slice('/onp/receipts/'.length));
@@ -139,18 +158,34 @@ async function main() {
     res.writeHead(404).end();
   });
 
+  // An admitted node the advisor will rank first (bigger, free) that is offline: Auto must fall back.
+  const gone = await listen(() => {});
+  const deadBase = gone.base;
+  await new Promise((r) => gone.server.close(r));
+
+  const TIERS = ['unverified', 'community', 'verified', 'attested'];
   const mockRegistry = await listen((req, res) => {
     if (req.method === 'GET' && req.url?.startsWith('/v0/offerings')) {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ total: 1, offerings: [{
+      const minTier = new URL(req.url, 'http://x').searchParams.get('tier');
+      const offerings = [{
         node_id: NODE_ID, offering_id: OFFERING, tier: registry.tier, source: 'registration', modality: 'text',
-        card_revision: registry.revision, model: { name: 'Echo' }, binding: { model_id: 'echo' },
-        pricing: registry.pricing, serving: { supports: ['streaming'] }, observed: { ttft_ms: { p50: 120 } },
+        card_revision: registry.revision, model: { name: 'Echo', params_b: 1 }, binding: { model_id: 'echo' },
+        pricing: registry.pricing, serving: { supports: ['streaming'] }, observed: { probe_success: 1, ttft_ms: { p50: 120 } },
         endpoints: { openai: `${mockNode.base}/v1` },
-      }] }));
+      }, {
+        node_id: 'org.test.dead', offering_id: 'big-1', tier: 'verified', source: 'registration', modality: 'text',
+        card_revision: rev(1), model: { name: 'Big', params_b: 70 }, binding: { model_id: 'big' },
+        pricing: price(0, 0), serving: { supports: ['streaming'] }, observed: { probe_success: 1, ttft_ms: { p50: 90 } },
+        endpoints: { openai: `${deadBase}/v1` },
+      }].filter((o) => !minTier || TIERS.indexOf(o.tier) >= TIERS.indexOf(minTier));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ total: offerings.length, offerings }));
     }
     res.writeHead(404).end();
   });
+
+  const cardErrors = validateCard(buildCard(mockNode.base));
+  check('the mock node card is valid ONP-2 (schema)', cardErrors.length === 0, cardErrors.join('; '));
 
   const SPENDING_ON = { maxRequestUsd: 1, dailyBudgetUsd: 10, maxPricePerMtok: null, minTier: 'unverified', schemes: ['free', 'prepaid', 'x402'] };
   const store: Record<string, any> = { 'ai.onpRegistryUrl': mockRegistry.base, 'onp.policy': SPENDING_ON };
@@ -163,9 +198,9 @@ async function main() {
   const ai = new AiService(settings);
   const send = (text: string) => ai.chat([{ role: 'user', content: text }], MODEL);
   const errorOf = async (p: Promise<unknown>) => { try { await p; return ''; } catch (e: any) { return String(e?.message ?? e); } };
-  const stream = (text: string) => new Promise<{ text: string; error: string; calls: OnpCallRecord[]; tools?: PendingToolCall[]; order: string[] }>((resolve) => {
+  const stream = (text: string, model = MODEL) => new Promise<{ text: string; error: string; calls: OnpCallRecord[]; tools?: PendingToolCall[]; order: string[] }>((resolve) => {
     const out = { text: '', error: '', calls: [] as OnpCallRecord[], order: [] as string[] };
-    ai.streamChat([{ role: 'user', content: text }], MODEL, {
+    ai.streamChat([{ role: 'user', content: text }], model, {
       onToken: (t) => { out.text += t; },
       onOnpCall: (c) => { out.calls.push(c); out.order.push('onpCall'); },
       onToolCall: (tools) => { out.order.push('toolCall'); resolve({ ...out, tools }); },
@@ -254,15 +289,39 @@ async function main() {
   check('streamed without receipt → missing', s.calls[0]?.receipt === 'missing');
   node.receipt = 'ok';
 
+  // 10) Auto: the advisor ranks the admitted pool on this device and falls back past failures
+  const AUTO = 'onp:auto';
+  const listed = await ai.listModels();
+  const autoModel = listed.find((m) => m.id === AUTO);
+  check('Auto is the first OpenNodes model, over the admitted pool', listed.find((m) => m.provider === 'onp')?.id === AUTO
+    && /2 admitted nodes/.test(autoModel?.description ?? ''), autoModel?.description);
+  r = await ai.chat([{ role: 'user', content: 'auto please' }], AUTO);
+  check('Auto falls back past an offline pick and records why', r.content === 'echo:auto please' && r.onp?.offering === KEY
+    && r.onp?.advisor?.skipped.length === 1 && r.onp.advisor.skipped[0].startsWith('org.test.dead/big-1'), JSON.stringify(r.onp?.advisor));
+  s = await stream('auto stream', AUTO);
+  check('Auto streams too, with a verified receipt and the advisor record', !s.error && s.text === 'echo:auto stream'
+    && s.calls[0]?.receipt === 'verified' && s.calls[0]?.advisor?.taskClass === 'chat', s.error || JSON.stringify(s.calls[0]?.advisor));
+  store['onp.policy'] = { ...SPENDING_ON, minTier: 'attested' };
+  r = await ai.chat([{ role: 'user', content: 'attested only' }], AUTO);
+  check('the policy minimum tier narrows the advisor pool', r.onp?.offering === KEY && r.onp?.advisor?.skipped.length === 0, JSON.stringify(r.onp?.advisor));
+  store['onp.policy'] = { ...SPENDING_ON, minTier: 'attested', maxPricePerMtok: 1 };
+  posts.length = 0;
+  const noRoute = await errorOf(ai.chat([{ role: 'user', content: 'nothing fits' }], AUTO));
+  check('when no pick passes the policy, Auto says so and sends nothing', noRoute.startsWith('Auto') && noRoute.includes('spend policy') && posts.length === 0, noRoute);
+  store['onp.policy'] = SPENDING_ON;
+
   // 7) spend policy, checked before any request leaves the client
   store['onp.policy'] = undefined; // the default: spending off
   posts.length = 0;
   const off = await errorOf(send('paid, spending off'));
   check('default policy blocks a paid offering before sending', off.includes('could cost up to') && posts.length === 0, off);
+  const marked = (await ai.listModels()).find((m) => m.id === MODEL);
+  check('the picker marks an offering the policy blocks', !!marked?.description.includes('blocked by your spend policy'), marked?.description);
   node.revision = registry.revision = rev(7); node.pricing = registry.pricing = price(0, 0);
   await ai.refreshOnpModels();
   r = await send('free');
   check('default policy lets a free offering run', r.content === 'echo:free' && r.onp?.receipt === 'verified' && r.onp?.amount?.value === 0, r.onp?.reason);
+  check('a free offering is not marked', !(await ai.listModels()).find((m) => m.id === MODEL)?.description.includes('blocked'));
   node.revision = registry.revision = rev(8); node.pricing = registry.pricing = price(1, 2);
   registry.tier = 'unverified';
   await ai.refreshOnpModels();
@@ -277,6 +336,16 @@ async function main() {
   const dayBlock = await errorOf(send('budget'));
   check('the daily budget blocks a request that could exceed it', dayBlock.includes('daily budget') && posts.length === 0, dayBlock);
   store['onp.policy'] = SPENDING_ON;
+
+  // 9) the 409 path trusts only a card that verifies (ONP-2 schema + signature via @opennodes/cli)
+  node.revision = rev(9); node.cardTampered = true;
+  posts.length = 0;
+  const tampered = await errorOf(send('tampered card'));
+  check('a card failing signature verification is surfaced, not trusted', tampered.includes('could not be verified') && posts.length === 1, tampered);
+  node.cardTampered = false;
+  posts.length = 0;
+  r = await send('verified card');
+  check('the same revision with a valid signature re-pins and retries', r.content === 'echo:verified card' && posts.length === 2 && posts[1].revision === rev(9), JSON.stringify(posts));
 
   // 4) the endpoint now serves something else
   node.servesOffering = `${NODE_ID}/other`;
