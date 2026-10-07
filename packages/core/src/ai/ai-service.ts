@@ -74,6 +74,18 @@ interface StreamCallbacks {
 const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
 const utcDay = () => new Date().toISOString().slice(0, 10);
 
+/**
+ * One readable line from a @google/generative-ai error. The SDK's message is
+ * "[GoogleGenerativeAI Error]: Error fetching from <url>: [402 Payment Required] <message> [<JSON details>]";
+ * this keeps the status and the message: "Gemini 402 Payment Required: <message>".
+ */
+export function describeGeminiError(err: unknown): string {
+  const raw = String((err as any)?.message ?? err);
+  const m = raw.match(/\[(\d{3})(?: ([^\]]*))?\]\s*([\s\S]*?)(?:\s*\[\{[\s\S]*)?$/);
+  if (m) return `Gemini ${m[1]}${m[2] ? ` ${m[2]}` : ''}: ${m[3].trim()}`;
+  return raw.replace(/^\[GoogleGenerativeAI Error\]:\s*/, 'Gemini: ');
+}
+
 /** Conservative prompt-token estimate for the spend ceiling (~3 chars per token, tools included). */
 function estimateInputTokens(params: any): number {
   return Math.ceil((JSON.stringify(params.messages ?? []).length + (params.tools ? JSON.stringify(params.tools).length : 0)) / 3);
@@ -485,6 +497,10 @@ export class AiService {
    */
   private async createCompletion(modelKey: string, client: OpenAI | null, params: any): Promise<{ data: any; onp?: OnpCallContext }> {
     if (!modelKey.startsWith('onp:')) return { data: await client!.chat.completions.create(params) };
+    // Saving an ai.* setting (refreshConfig) clears the registry state. Reload it here; otherwise
+    // Auto has an empty pool and offerings are "not in the current model list" until the picker
+    // happens to refresh, while the renderer still lists them.
+    if (this.onpLoadedAt === 0) await this.refreshOnpModels();
     if (modelKey !== ONP_AUTO_MODEL) return this.invokeOnp(this.getOnpOffering(modelKey), params);
 
     const pool = this.onpPool.map((k) => this.onpOfferings.get(k)).filter((o): o is OnpOffering => !!o);
@@ -586,7 +602,7 @@ export class AiService {
     this.assertModelAllowed(modelKey);
     // Gemini uses its own SDK
     if (modelKey.startsWith('gemini')) {
-      return this.chatGemini(messages, modelKey);
+      return this.chatGemini(messages, modelKey).catch((err) => { throw new Error(describeGeminiError(err)); });
     }
 
     const { client, modelId } = this.getClientForModel(modelKey);
@@ -633,9 +649,11 @@ export class AiService {
         }
       }
 
-      // Gemini streaming
+      // Gemini streaming. Awaited so a failed request (bad key, quota, 402) lands in the catch
+      // below and reaches onError, instead of escaping as an unhandled rejection.
       if (modelKey.startsWith('gemini')) {
-        return this.streamGemini(augmentedMessages, modelKey, callbacks, tools);
+        return await this.streamGemini(augmentedMessages, modelKey, callbacks, tools)
+          .catch((err) => { throw new Error(describeGeminiError(err)); });
       }
 
       const { client, modelId } = this.getClientForModel(modelKey);
@@ -820,14 +838,18 @@ export class AiService {
     }
 
     const modelId = this.getModelId(modelKey);
-    const model = this.geminiClient.getGenerativeModel({ model: modelId });
+    // System prompts go in systemInstruction (getGenerativeModel turns a string into Content),
+    // not into the history as a user turn.
+    const system = messages.filter((m: any) => m.role === 'system').map((m: any) => m.content).join('\n\n');
+    const turns = messages.filter((m: any) => m.role !== 'system');
+    const model = this.geminiClient.getGenerativeModel({ model: modelId, ...(system ? { systemInstruction: system } : {}) });
 
-    const history = messages.slice(0, -1).map((m: any) => ({
+    const history = turns.slice(0, -1).map((m: any) => ({
       role: m.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: m.content }],
     }));
 
-    const lastMessage = messages[messages.length - 1];
+    const lastMessage = turns[turns.length - 1];
     const chat = model.startChat({ history });
     const result = await chat.sendMessage(lastMessage.content);
     const text = result.response.text();
@@ -860,11 +882,14 @@ export class AiService {
       }];
     }
 
-    const model = this.geminiClient.getGenerativeModel(modelConfig);
-
     // Filter messages for Gemini format (no 'tool' or 'system' role in history)
     const systemMessage = messages.find(m => m.role === 'system');
     const chatMessages = messages.filter(m => m.role !== 'system');
+
+    // The system prompt belongs on the model: getGenerativeModel converts a string to Content, but
+    // startChat passes systemInstruction through as-is, and the API rejects a bare string (400).
+    if (systemMessage) modelConfig.systemInstruction = systemMessage.content;
+    const model = this.geminiClient.getGenerativeModel(modelConfig);
 
     const history = chatMessages.slice(0, -1).map((m) => {
       if (m.role === 'tool') {
@@ -894,10 +919,7 @@ export class AiService {
         }]
       : [{ text: lastMessage.content }];
 
-    const chat = model.startChat({
-      history,
-      ...(systemMessage ? { systemInstruction: systemMessage.content } : {}),
-    });
+    const chat = model.startChat({ history });
 
     const result = await chat.sendMessageStream(lastParts as any);
 

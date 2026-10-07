@@ -89,6 +89,11 @@ Verification scripts for the ONP integration:
 - By default the SDK **resends 409s** with the same headers, so ONP clients are built with `maxRetries: 0`.
 - On an error, the SDK keeps only an `{error: …}` body, so a node's problem+json `title` (`price_changed` / `offering-mismatch`) never reaches `err.error`. After a 409, Surge re-fetches the card: a newer revision means price_changed, the same revision means offering-mismatch.
 
+**Gemini SDK quirks** (`@google/generative-ai`):
+- `startChat({ systemInstruction })` passes a string through unconverted, and the API rejects it (400 "Invalid value at 'system_instruction'"). Put the system prompt on `getGenerativeModel`, which converts it.
+- Provider streams must be awaited inside `streamChat`'s try (so failures reach `onError`), and `runToolLoop` catches a rejected `streamChat`. Otherwise an API error leaves the IPC call unanswered ("reply was never sent").
+- `describeGeminiError` turns the SDK's error into one line ("Gemini 402 Payment Required: …").
+
 **Driving the real app** (no Playwright in the repo): run `pnpm --filter @surge/desktop build`. Then from `apps/desktop` run `electron . --remote-debugging-port=9333 --user-data-dir=<tmp dir>`. Drive the renderer page (`…/renderer/index.html`) over CDP: `Runtime.evaluate` and `Page.captureScreenshot`; Node 24 has a global `WebSocket`. `--user-data-dir` keeps the user's real `surge-settings.json` and `surge.db` untouched. Call `window.surge.window.resize('expanded')` before screenshotting dropdowns.
 - The packaged app drives the same way (`release/win-unpacked/Surge.exe --remote-debugging-port=… --user-data-dir=…`). Add `--inspect=<port>` to reach its main process, where `process.mainModule.require(...)` works.
 - **Test the installed copy, not `win-unpacked`, for module problems.** `win-unpacked` sits inside the repo, so Node's lookup walks up into the repo's `node_modules` and hides modules missing from `app.asar`. A per-user install is `Surge-Setup-*.exe /S`; uninstall with `"%LOCALAPPDATA%ProgramssurgeUninstall Surge.exe" /currentuser /S`. Both are silent, and user data is kept.
