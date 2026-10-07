@@ -169,6 +169,10 @@ Verification scripts for the ONP integration:
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Private mode with tools.* Local models without tool support fail through the router: Surge's prompt-based tool fallback only triggers for `vllm-custom` / `ollama-local`.
   - *Heavy prompts.* The chat sends all 27 browser + bookmarks tool definitions every turn (~3.2k prompt tokens), which is slow on small CPU nodes and inflates paid ceilings.
+- **Window layout** (`apps/desktop/src/main/main.ts`): `layoutViews()` is the only code that sizes the two views. With the page attached, the app UI gets a 400px column (half the window if narrower) and the page the rest; otherwise the app UI fills the window.
+  - Every window or attach change calls it: `window:resize`, `resize`, maximize, `browser:show` and `browser:hide`.
+  - Before, `window:resize` (sent on every mode change) stretched the app UI full-width under the still-attached page, which left Settings half covered.
+  - Settings detaches the page while open and restores it on close (`openSettings` / `closeSettings` in `App.tsx`). A renderer screenshot never shows the native page view, so check layout from main: `BaseWindow.getAllWindows()[0].contentView.children`, through `--inspect` with `includeCommandLineAPI`.
 - **Fixed for the launch kit** (2026-10-06):
   - *Clipped picker.* In the 160px idle window, opening the model list grows the window to its expanded size and shrinks it back on close (unless a chat started meanwhile). The list is positioned against its real containing block: the search bar's `backdrop-filter` makes it the containing block for `position: fixed`. It sits above the hints row and is opaque.
   - *Browser tool hang.* `BrowserService.executeTool` answers "No page is open…" when the view never loaded a page; there, `executeJavaScript` never settles. Every tool also has a ceiling of max(15s, timeoutMs + 5s).
@@ -199,7 +203,9 @@ Verification scripts for the ONP integration:
   - Before the flip: gitleaks over all 24 commits, no findings. `PLAN.md` (an obsolete .NET plan) was removed, and `.claude/launch.json` is no longer tracked.
   - `SECURITY.md` points at GitHub private vulnerability reporting; `CONTRIBUTING.md` covers setup, checks and ground rules.
   - Enabled on the repo: secret scanning with push protection, Dependabot alerts, private vulnerability reporting. Description, homepage (opennodes.io) and topics are set. Dependabot security-update PRs are off.
-  - Every OpenNodes surface links the repo: the landing page and README ([opennodes-io/opennodes#2](https://github.com/opennodes-io/opennodes/pull/2)), and the registry web app's Desktop & Apps panel, shipped in `@opennodes/registry` 0.1.7 ([opennodes-io/opennodes#3](https://github.com/opennodes-io/opennodes/pull/3)) and live on registry.opennodes.io.
+  - Every OpenNodes surface links both the repo and the Windows installer on [Releases](https://github.com/opennodes-io/surge/releases).
+    - The landing page and README: [opennodes-io/opennodes#2](https://github.com/opennodes-io/opennodes/pull/2) for the repo link, then [#4](https://github.com/opennodes-io/opennodes/pull/4) for the installer.
+    - The registry web app's Desktop & Apps panel: `@opennodes/registry` 0.1.7 ([#3](https://github.com/opennodes-io/opennodes/pull/3)), then 0.1.8 ([#5](https://github.com/opennodes-io/opennodes/pull/5)), live on registry.opennodes.io since 2026-10-07.
   - The opennodes registry server is deployed over SSH (`deploy/RELEASING.md` step 5). Claude can't reach it from here, so the user runs that step.
 - `.gitignore` covers `.claude/` and `tmpclaude-*`. `.npmrc` is benign (`node-linker=hoisted`). Never commit API keys; AI provider keys belong in the settings port / OS keychain.
 
@@ -213,7 +219,7 @@ Verification scripts for the ONP integration:
 ## What a good next session does
 
 1. **Installers.** Surge 0.1.1 for Windows is published (see "Windows installer" above).
-   - Each release: bump `apps/desktop` `version` in a PR, merge, push `v<version>`, then review and publish the draft (CONTRIBUTING.md). Publishing is the user's call. Check that it actually published: `gh api repos/opennodes-io/surge/releases` shows `draft=false`. A `v0.1.0` draft, built before the browser-mode fixes, was superseded and never published.
+   - Each release: bump `apps/desktop` `version` in a PR, merge, push `v<version>`, then review and publish the draft (CONTRIBUTING.md). Publishing is the user's call. Check that it actually published: `gh api repos/opennodes-io/surge/releases` shows `draft=false`. A `v0.1.0` draft, built before the browser-mode fixes, was never published. It and its tag were deleted, so `v0.1.1` is the only tag and release.
    - Code signing is the user's decision (a certificate or Azure Trusted Signing). Unsigned, SmartScreen warns about an unknown publisher.
    - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
