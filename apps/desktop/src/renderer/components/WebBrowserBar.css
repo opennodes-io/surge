@@ -15,12 +15,16 @@
   flex-shrink: 0;
 }
 
+/* min-width: 0 lets the URL field shrink; flex items default to their content width, which pushed
+   the action buttons under the web page in the ~400px column beside it. */
 .wbb-url-form {
   flex: 1;
+  min-width: 0;
 }
 
 .wbb-url-wrapper {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: var(--space-sm);
   padding: 4px var(--space-sm);
@@ -66,6 +70,7 @@
 
 .wbb-url-input {
   flex: 1;
+  min-width: 0;
   background: transparent;
   border: none;
   color: var(--text-primary);
@@ -80,5 +85,35 @@
 }
 
 .wbb-actions {
+  display: flex;
+  gap: 2px;
   flex-shrink: 0;
+}
+
+/* Notice under the bar, e.g. why "Create agent" failed; wraps to fit the narrow column. */
+.wbb-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--accent-red);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.wbb-notice-text {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.wbb-notice-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
 }
