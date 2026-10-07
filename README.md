@@ -10,7 +10,7 @@
   <img src="docs/launch-kit/media/surge-browser-receipt-light.png" width="900" alt="Surge with opennodes.io open in its browser: a page tool read the site, and the answer came from an OpenNodes node chosen by the advisor, with its verified receipt shown under the reply">
 </picture>
 
-> **Pre-release.** Tested on Windows 11; macOS and Linux are untested. There are no published installers yet — build from source, or build the Windows installer yourself (below).
+> **Pre-release.** Tested on Windows 11. **Windows:** [download the installer](https://github.com/opennodes-io/surge/releases). macOS and Linux are untested; build from source.
 
 ## What it does
 
@@ -31,6 +31,12 @@
 **Also**
 - Gemini, Groq, Claude, Mistral, Ollama, and any OpenAI-compatible endpoint (vLLM, LM Studio, LocalAI, …).
 - API keys kept in the OS keychain (Electron `safeStorage`); imported catalogs get one key per host, sent only to that host.
+
+## Install (Windows)
+
+Download `Surge-Setup-<version>.exe` from [Releases](https://github.com/opennodes-io/surge/releases) and run it. It installs for your user only, with no admin prompt, into `%LOCALAPPDATA%\Programs\surge`; your data lives in `%APPDATA%\Surge` and is kept if you uninstall.
+
+The installer isn't code-signed yet, so Windows SmartScreen says "Windows protected your PC": choose **More info → Run anyway**. To check the download first, compare `certutil -hashfile Surge-Setup-<version>.exe SHA256` with the release's `SHA256SUMS.txt`.
 
 ## Build from source
 
@@ -56,7 +62,7 @@ Or build a Windows installer (on Windows):
 pnpm --filter @surge/desktop dist:win
 ```
 
-That writes `apps/desktop/release/Surge-Setup-<version>.exe`, a per-user installer: no admin prompt, installs to `%LOCALAPPDATA%\Programs\surge`. It isn't code-signed yet, so Windows SmartScreen may warn about an unknown publisher. The installed app keeps its data in `%APPDATA%\Surge`; builds run from source use `%APPDATA%\Surge Dev`, so the two never share a database.
+That writes `apps/desktop/release/Surge-Setup-<version>.exe`, the same per-user installer as on Releases. Builds run from source keep their data in `%APPDATA%\Surge Dev`, so they never share a database with an installed Surge.
 
 On first run, the OpenNodes models need no setup: the admitted nodes are free, so they work under the default spending-off policy. For the other providers add a key in **Settings → API Keys** (Gemini and Groq have free tiers). The registry, spend policy, per-host keys and private mode live in **Settings → Advanced**; the ledger is in **Settings → Spend**.
 
