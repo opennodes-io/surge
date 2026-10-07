@@ -36,6 +36,7 @@
 
 .search-input {
   flex: 1;
+  min-width: 0; /* shrink instead of pushing the model picker out of a narrow column */
   border: none;
   background: transparent;
   color: var(--text-primary);
@@ -90,6 +91,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-primary);
+}
+
+/* The chat column beside the web page is ~400px: shorten the model name (its tooltip has it all). */
+@media (max-width: 520px) {
+  .model-name {
+    max-width: 72px;
+  }
 }
 
 /* Dropdown */

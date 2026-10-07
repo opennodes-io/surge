@@ -6,8 +6,8 @@ import SettingsPanel from './components/SettingsPanel';
 import WebBrowserBar from './components/WebBrowserBar';
 import McpWebPanel from './components/McpWebPanel';
 import AgentApprovalModal from './components/AgentApprovalModal';
-import { IconStar, IconBolt, IconGlobe, IconSettings, IconMinus, IconX, IconMaximize, IconRestore } from './components/Icons';
-import { PRIVATE_AUTO_MODEL } from './types';
+import { IconNewChat, IconBolt, IconGlobe, IconSettings, IconMinus, IconX, IconMaximize, IconRestore } from './components/Icons';
+import { PRIVATE_AUTO_MODEL, ONP_AUTO_MODEL } from './types';
 import type { AppMode, ChatMessage, AiModel, OnpCall, McpWebCapabilities, McpWebConnectResult, McpBDetectResult, WebAgentSpec } from './types';
 import type { ToolCallData } from './components/McpToolCallBlock';
 import './styles/app.css';
@@ -42,6 +42,8 @@ const App: React.FC = () => {
   // Per-site agent generation/approval
   const [agentProposal, setAgentProposal] = useState<{ spec: WebAgentSpec; usesCode: boolean } | null>(null);
   const [creatingAgent, setCreatingAgent] = useState(false);
+  // Why the last "Create agent" didn't produce a proposal, shown under the browser bar.
+  const [agentNotice, setAgentNotice] = useState<{ text: string; failedModel?: string } | null>(null);
 
   useEffect(() => {
     window.surge?.ai?.getModels?.().then(setModels).catch(() => {});
@@ -322,27 +324,42 @@ const App: React.FC = () => {
   }, [browserUrl]);
 
   // Generate a per-site agent from the current page (proposal only — user must approve).
-  const handleCreateAgent = useCallback(async () => {
+  // A failure becomes a notice under the browser bar, not a native alert.
+  const createAgent = useCallback(async (model: string) => {
     if (creatingAgent) return;
     setCreatingAgent(true);
+    setAgentNotice(null);
+    const modelName = models.find((m) => m.id === model)?.name || model;
     try {
-      const res = await window.surge.agents.generate(selectedModel);
+      const res = await window.surge.agents.generate(model);
       if (res.success && res.spec && res.spec.tools.length > 0) {
         setAgentProposal({ spec: res.spec, usesCode: !!res.usesCode });
+      } else if (res.success) {
+        setAgentNotice({ text: `${modelName} found nothing on this page to turn into agent tools.`, failedModel: model });
       } else {
-        alert(res.error || 'Could not generate an agent for this page.');
+        setAgentNotice({ text: `Couldn't create an agent with ${modelName}: ${res.error || 'unknown error'}`, failedModel: model });
       }
     } catch (err: any) {
-      alert(err.message || 'Agent generation failed');
+      setAgentNotice({ text: `Couldn't create an agent with ${modelName}: ${err.message || 'unknown error'}`, failedModel: model });
     } finally {
       setCreatingAgent(false);
     }
-  }, [creatingAgent, selectedModel]);
+  }, [creatingAgent, models]);
+
+  const handleCreateAgent = useCallback(() => createAgent(selectedModel), [createAgent, selectedModel]);
+
+  // Offer a retry on a model that needs no API key: OpenNodes Auto, or auto-private in private mode.
+  const agentRetryModel = agentNotice?.failedModel
+    ? models.find((m) => (m.id === ONP_AUTO_MODEL || m.id === PRIVATE_AUTO_MODEL) && m.id !== agentNotice.failedModel)
+    : undefined;
+
+  // A notice belongs to the page it was about.
+  useEffect(() => { setAgentNotice(null); }, [browserUrl]);
 
   const handleApproveAgent = useCallback(async (spec: WebAgentSpec) => {
     const res = await window.surge.agents.save(spec);
     setAgentProposal(null);
-    if (!res.success) alert(res.error || 'Failed to save agent');
+    if (!res.success) setAgentNotice({ text: `Couldn't save the agent: ${res.error || 'unknown error'}` });
   }, []);
 
   return (
@@ -352,7 +369,7 @@ const App: React.FC = () => {
         <div className="title-bar-left no-drag">
           {mode !== 'idle' && (
             <button className="btn-icon" onClick={handleNewChat} title="New Chat">
-              <IconStar size={15} />
+              <IconNewChat size={15} />
             </button>
           )}
           <button className="btn-icon" onClick={() => {
@@ -413,6 +430,12 @@ const App: React.FC = () => {
           }}
           onCreateAgent={handleCreateAgent}
           creatingAgent={creatingAgent}
+          notice={agentNotice && {
+            text: agentNotice.text,
+            actionLabel: agentRetryModel && `Retry with ${agentRetryModel.name}`,
+            onAction: agentRetryModel && (() => createAgent(agentRetryModel.id)),
+          }}
+          onDismissNotice={() => setAgentNotice(null)}
         />
       )}
 

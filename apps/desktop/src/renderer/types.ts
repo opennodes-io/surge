@@ -140,6 +140,7 @@ export interface PrivateStatus {
 }
 
 export const PRIVATE_AUTO_MODEL = 'private:auto-private';
+export const ONP_AUTO_MODEL = 'onp:auto';
 
 // The spend dashboard's data (mirrors OnpSpendSummary / OnpCallEntry from @surge/core/storage)
 export interface OnpSpend {
