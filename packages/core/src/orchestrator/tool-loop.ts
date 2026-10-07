@@ -146,7 +146,7 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<void> {
         },
         hasTools ? toolDefs : undefined,
         systemPrompt || undefined,
-      );
+      ).catch(reject); // a provider that rejects instead of calling onError must still end the turn
     });
 
   try {
