@@ -98,23 +98,31 @@ function createMainWindow(): void {
   });
 
   // Re-layout views when window is resized (drag edges, maximize, etc.)
-  mainWindow.on('resize' as any, () => {
-    if (!mainWindow || !appView) return;
-    const bounds = mainWindow.getBounds();
-    if (browserView && mainWindow.contentView.children.includes(browserView)) {
-      const splitPoint = Math.min(400, Math.round(bounds.width * 0.4));
-      appView.setBounds({ x: 0, y: 0, width: splitPoint, height: bounds.height });
-      browserView.setBounds({ x: splitPoint, y: 0, width: bounds.width - splitPoint, height: bounds.height });
-    } else {
-      appView.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
-    }
-  });
+  mainWindow.on('resize' as any, layoutViews);
 
   mainWindow.on('closed' as any, () => {
     mainWindow = null;
     appView = null;
     browserView = null;
   });
+}
+
+/**
+ * The one place that sizes the two views. With the web page attached, the app UI gets a 400px
+ * column on the left (half the window if that's narrower) and the page the rest; otherwise the
+ * app UI fills the window. Every path that changes the window or attaches/detaches the page calls
+ * this, so the app UI is never laid out full-width underneath the page.
+ */
+function layoutViews(): void {
+  if (!mainWindow || !appView) return;
+  const { width, height } = mainWindow.getBounds();
+  if (browserView && mainWindow.contentView.children.includes(browserView)) {
+    const column = Math.min(400, Math.round(width / 2));
+    appView.setBounds({ x: 0, y: 0, width: column, height });
+    browserView.setBounds({ x: column, y: 0, width: width - column, height });
+  } else {
+    appView.setBounds({ x: 0, y: 0, width, height });
+  }
 }
 
 function setupTray(): void {
@@ -139,13 +147,14 @@ ipcMain.on('window:resize', (_event, mode: 'compact' | 'expanded') => {
     const newX = Math.round((screenW - EXPANDED_WIDTH) / 2);
     const newY = Math.round((screenH - EXPANDED_HEIGHT) / 2);
     mainWindow.setBounds({ x: newX, y: newY, width: EXPANDED_WIDTH, height: EXPANDED_HEIGHT });
-    appView.setBounds({ x: 0, y: 0, width: EXPANDED_WIDTH, height: EXPANDED_HEIGHT });
   } else {
     const newX = Math.round((screenW - COMPACT_WIDTH) / 2);
     const newY = Math.round(screenH * 0.3);
     mainWindow.setBounds({ x: newX, y: newY, width: COMPACT_WIDTH, height: COMPACT_HEIGHT });
-    appView.setBounds({ x: 0, y: 0, width: COMPACT_WIDTH, height: COMPACT_HEIGHT });
   }
+  // Keep the page split if it's showing: stretching the app UI to the full window here used to
+  // leave it underneath the page (e.g. Settings, opened while a site was open, was half covered).
+  layoutViews();
 });
 
 // Browser view controls
@@ -156,19 +165,15 @@ ipcMain.on('browser:navigate', (_event, url: string) => {
 });
 
 ipcMain.on('browser:show', () => {
-  if (!mainWindow || !browserView || !appView) return;
-  const bounds = mainWindow.getBounds();
-  const splitPoint = 400;
-  appView.setBounds({ x: 0, y: 0, width: splitPoint, height: bounds.height });
-  browserView.setBounds({ x: splitPoint, y: 0, width: bounds.width - splitPoint, height: bounds.height });
+  if (!mainWindow || !browserView) return;
   mainWindow.contentView.addChildView(browserView);
+  layoutViews();
 });
 
 ipcMain.on('browser:hide', () => {
-  if (!mainWindow || !browserView || !appView) return;
+  if (!mainWindow || !browserView) return;
   mainWindow.contentView.removeChildView(browserView);
-  const bounds = mainWindow.getBounds();
-  appView.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
+  layoutViews();
 });
 
 ipcMain.on('browser:back', () => {
@@ -205,15 +210,7 @@ ipcMain.on('window:maximize', () => {
   } else {
     mainWindow.maximize();
   }
-  // Re-layout views to fill the new window size
-  const bounds = mainWindow.getBounds();
-  if (browserView && mainWindow.contentView.children.includes(browserView)) {
-    const splitPoint = 400;
-    appView.setBounds({ x: 0, y: 0, width: splitPoint, height: bounds.height });
-    browserView.setBounds({ x: splitPoint, y: 0, width: bounds.width - splitPoint, height: bounds.height });
-  } else {
-    appView.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
-  }
+  layoutViews();
   // Notify renderer of maximize state
   appView.webContents.send('window:maximizeChanged', mainWindow.isMaximized());
 });
