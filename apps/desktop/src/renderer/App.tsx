@@ -356,6 +356,20 @@ const App: React.FC = () => {
   // A notice belongs to the page it was about.
   useEffect(() => { setAgentNotice(null); }, [browserUrl]);
 
+  // Settings takes the whole window: the web page steps aside while it's open and comes back on
+  // close. Closing returns to the chat (or the open page), or to idle if there's neither.
+  const openSettings = useCallback(() => {
+    setShowSettings(true);
+    setMode('settings');
+    if (showBrowser) window.surge?.browser?.hide();
+  }, [showBrowser]);
+
+  const closeSettings = useCallback(() => {
+    setShowSettings(false);
+    setMode(messages.length === 0 && !browserUrl ? 'idle' : 'chat');
+    if (showBrowser) window.surge?.browser?.show();
+  }, [showBrowser, messages.length, browserUrl]);
+
   const handleApproveAgent = useCallback(async (spec: WebAgentSpec) => {
     const res = await window.surge.agents.save(spec);
     setAgentProposal(null);
@@ -393,7 +407,7 @@ const App: React.FC = () => {
           {mcpWebConnected && <span className="title-status mcpweb-active">&#9889; MCPWeb Connected</span>}
         </div>
         <div className="title-bar-right no-drag">
-          <button className="btn-icon" onClick={() => { setShowSettings(!showSettings); if (!showSettings) setMode('settings'); }} title="Settings">
+          <button className="btn-icon" onClick={showSettings ? closeSettings : openSettings} title="Settings">
             <IconSettings size={15} />
           </button>
           <button className="btn-icon" onClick={() => window.surge?.window?.minimize()} title="Minimize">
@@ -447,7 +461,7 @@ const App: React.FC = () => {
             models={models}
             onSelectModel={setSelectedModel}
             onModelsChanged={setModels}
-            onClose={() => { setShowSettings(false); if (messages.length === 0) setMode('idle'); else setMode('chat'); }}
+            onClose={closeSettings}
           />
         ) : (
           <>
