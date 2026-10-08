@@ -169,6 +169,11 @@ Verification scripts for the ONP integration:
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Private mode with tools.* Local models without tool support fail through the router: Surge's prompt-based tool fallback only triggers for `vllm-custom` / `ollama-local`.
   - *Heavy prompts.* The chat sends all 27 browser + bookmarks tool definitions every turn (~3.2k prompt tokens), which is slow on small CPU nodes and inflates paid ceilings.
+- **OAuth for remote MCP servers** (`apps/desktop/src/main/services/mcp-oauth.ts`, `McpAuthHandler` in core).
+  - On a 401, the SDK runs discovery, dynamic client registration and PKCE, and the provider opens the system browser. The code comes back on a loopback callback (`http://127.0.0.1:<mcp.oauthCallbackPort, 4767>/oauth/callback`) that listens only while a sign-in is pending. `McpManager.connectClient` then calls `finishAuth` and reconnects.
+  - The client registration and tokens are stored per server URL in the keychain (`mcp.oauth.<host><path>#client|tokens`), so reconnects reuse them. Sign out forgets them.
+  - `connectServer(config, { interactive: false })` (used by `reconnectSaved`) never opens a browser.
+  - Tested against the SDK's `simpleStreamableHttp.js --oauth` example (MCP_PORT / MCP_AUTH_PORT), with `shell.openExternal` patched to a fetch through `--inspect`.
 - **Surge hub** (`apps/desktop/src/main/services/surge-hub.ts`): a local MCP server at `http://127.0.0.1:<hub.port, 4766>/mcp` exposing the `browser` and `bookmarks` virtual servers to other AI apps.
   - Off by default (`hub.enabled`). It needs a bearer token (`hub.token` in the keychain), uses the SDK's DNS-rebinding protection (`allowedHosts`), and is stateless: a server and transport per POST.
   - Read-only unless `hub.allowActions`: 14 read tools, 27 with actions. Refused calls say how to allow them.

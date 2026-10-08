@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { IconBolt, IconSearch, IconX, IconPlug, IconChevronDown, IconChevronUp } from './Icons';
-import type { ConnectedServer, McpServerConfig, IndexServer, IndexCategory, DiscoveryQuery, SavedAgent } from '../types';
+import type { ConnectedServer, McpServerConfig, IndexServer, IndexCategory, DiscoveryQuery, SavedAgent, McpAuthStatus } from '../types';
 import './ServerPanel.css';
 
 interface ServerPanelProps {
@@ -26,6 +26,13 @@ function trustClass(tier?: string): string {
 
 const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
   const [servers, setServers] = useState<ConnectedServer[]>([]);
+  // A connect in progress: its server, and the sign-in page while one is pending (OAuth).
+  const [connecting, setConnecting] = useState<{ id: string; name: string; signInUrl?: string } | null>(null);
+  const [connectError, setConnectError] = useState('');
+
+  useEffect(() => window.surge.mcp.onAuthStatus((s: McpAuthStatus) => {
+    if (s.status === 'waiting') setConnecting((c) => (c && c.id === s.serverId ? { ...c, signInUrl: s.url } : c));
+  }), []);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<IndexServer[]>([]);
   const [categories, setCategories] = useState<IndexCategory[]>([]);
@@ -103,12 +110,22 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
   };
 
   const handleConnect = async (config: McpServerConfig) => {
+    setConnectError('');
+    setConnecting({ id: config.id, name: config.name });
     try {
-      await window.surge.mcp.connect(config);
-      refreshServers();
+      const res = await window.surge.mcp.connect(config);
+      if (res?.error) setConnectError(`Couldn't connect ${config.name}: ${res.error}`);
     } catch (err: any) {
-      alert(err.message || 'Failed to connect');
+      setConnectError(`Couldn't connect ${config.name}: ${err.message || 'unknown error'}`);
+    } finally {
+      setConnecting(null);
+      refreshServers();
     }
+  };
+
+  const handleSignOut = async (serverId: string) => {
+    await window.surge.mcp.signOut(serverId);
+    refreshServers();
   };
 
   const handleManualConnect = async () => {
@@ -204,6 +221,22 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
 
         <div className="sp-section">
           <div className="sp-section-title">Connected ({servers.length})</div>
+          {connecting && (
+            <div className="sp-connecting" role="status">
+              {connecting.signInUrl ? (
+                <>
+                  <span>Sign in to <strong>{connecting.name}</strong> in your browser to finish connecting.</span>
+                  <div className="sp-connecting-actions">
+                    <button className="btn-ghost btn-sm" onClick={() => window.surge.browser.openExternal(connecting.signInUrl!)}>Open the sign-in page again</button>
+                    <button className="btn-ghost btn-sm" onClick={() => window.surge.mcp.cancelSignIn(connecting.id)}>Cancel</button>
+                  </div>
+                </>
+              ) : (
+                <span><span className="spinner spinner-sm" /> Connecting to {connecting.name}…</span>
+              )}
+            </div>
+          )}
+          {connectError && <div className="sp-connect-error" role="alert">{connectError}</div>}
           {servers.length === 0 ? (
             <div className="sp-empty">No servers connected</div>
           ) : (
@@ -214,6 +247,10 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
                   <span className="sp-server-name">{s.name}</span>
                   {s.virtual && <span className="badge badge-purple" style={{ fontSize: '0.6rem' }}>{s.source === 'in-process' ? 'local' : s.source === 'codegen' ? 'agent' : 'page'}</span>}
                   {s.config.isMcpWeb && <span className="badge badge-cyan" style={{ fontSize: '0.6rem' }}>MCPWeb</span>}
+                  {s.signedIn && <span className="badge badge-green" style={{ fontSize: '0.6rem' }}>Signed in</span>}
+                  {s.signedIn && (
+                    <button className="btn-ghost btn-sm" title="Forget this server's sign-in and disconnect" onClick={() => handleSignOut(s.id)}>Sign out</button>
+                  )}
                   {!s.virtual && (
                     <button className="btn-ghost btn-sm" onClick={() => handleDisconnect(s.id)}>Disconnect</button>
                   )}

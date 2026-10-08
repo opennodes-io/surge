@@ -32,6 +32,9 @@ declare global {
         discover: (query: string) => Promise<any[]>;
         onServerEvent: (callback: (event: any) => void) => () => void;
         onToolCall: (callback: (data: any) => void) => () => void;
+        cancelSignIn: (serverId: string) => Promise<boolean>;
+        signOut: (serverId: string) => Promise<{ success: boolean }>;
+        onAuthStatus: (callback: (status: McpAuthStatus) => void) => () => void;
       };
       mcpweb: {
         detect: (url: string) => Promise<McpWebCapabilities>;
@@ -249,10 +252,20 @@ export interface McpServerConfig {
   isMcpWeb?: boolean;
 }
 
+/** Sign-in progress for a remote MCP server that needs OAuth. */
+export interface McpAuthStatus {
+  serverId: string;
+  serverName: string;
+  status: 'waiting' | 'done' | 'failed' | 'cancelled';
+  url?: string;
+  error?: string;
+}
+
 export interface ConnectedServer {
   id: string;
   name: string;
   status: 'connected' | 'disconnected' | 'error';
+  signedIn?: boolean;
   tools: McpTool[];
   config: McpServerConfig;
   virtual?: boolean;

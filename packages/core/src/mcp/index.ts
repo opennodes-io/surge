@@ -6,6 +6,7 @@ export type {
   ToolDefinition,
   VirtualServer,
   VirtualServerSource,
+  McpAuthHandler,
 } from './mcp-manager.js';
 export { McpWebDetector } from './mcpweb-detector.js';
 export type { McpWebCapabilities, McpWebTransport } from './mcpweb-detector.js';

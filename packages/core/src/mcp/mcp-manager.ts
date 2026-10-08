@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { SettingsPort } from '../ports/index.js';
 import type { McpWebCapabilities } from './mcpweb-detector.js';
 import type { AgentSpec } from '../storage/types.js';
@@ -17,10 +18,23 @@ export interface McpServerConfig {
   isMcpWeb?: boolean; // true if connected via MCPWeb auto-detect
 }
 
+/**
+ * OAuth for remote servers (MCP authorization), supplied by the host app: it owns opening a browser,
+ * receiving the redirect and storing credentials, which core can't do platform-neutrally.
+ */
+export interface McpAuthHandler {
+  /** The server's OAuth provider. With `interactive: false` it must not open a browser. */
+  provider(config: McpServerConfig, opts: { interactive: boolean }): OAuthClientProvider;
+  /** Resolves with the authorization code once the user has signed in; rejects on cancel or timeout. */
+  waitForCode(config: McpServerConfig): Promise<string>;
+}
+
 export interface ConnectedServer {
   id: string;
   name: string;
   status: 'connected' | 'disconnected' | 'error';
+  /** Connected with OAuth credentials (the user signed in to this server). */
+  signedIn?: boolean;
   tools: McpTool[];
   config: McpServerConfig;
   /** true for in-memory virtual servers (page tools, in-process repos) — not real transports */
@@ -65,6 +79,33 @@ export interface ToolDefinition {
 export class McpManager {
   private connections: Map<string, { client: Client; transport: any; server: ConnectedServer }> = new Map();
   private virtualServers: Map<string, VirtualServer> = new Map();
+  private authHandler: McpAuthHandler | null = null;
+
+  /** Enables OAuth sign-in for remote servers (see McpAuthHandler). */
+  setAuthHandler(handler: McpAuthHandler | null): void {
+    this.authHandler = handler;
+  }
+
+  /**
+   * Connects a client over `makeTransport()`. If the server answers 401 and someone is there to sign
+   * in, the provider has opened the sign-in page: wait for the code, finish the exchange, reconnect.
+   */
+  private async connectClient(config: McpServerConfig, makeTransport: () => any, interactive: boolean): Promise<{ client: Client; transport: any }> {
+    let transport = makeTransport();
+    let client = new Client({ name: 'surge-mcp-browser', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+    } catch (err) {
+      if (!(err instanceof UnauthorizedError) || !this.authHandler) throw err;
+      if (!interactive) throw new Error(`${config.name} needs you to sign in: connect it from the MCP Servers panel.`);
+      const code = await this.authHandler.waitForCode(config);
+      await transport.finishAuth(code);
+      transport = makeTransport();
+      client = new Client({ name: 'surge-mcp-browser', version: '1.0.0' });
+      await client.connect(transport);
+    }
+    return { client, transport };
+  }
   private settings: SettingsPort;
 
   constructor(settings: SettingsPort) {
@@ -151,7 +192,8 @@ export class McpManager {
   }
 
   // ── Standard Server Connection ──────────────────────────
-  async connectServer(config: McpServerConfig): Promise<ConnectedServer> {
+  /** `interactive: false` (e.g. reconnecting saved servers) never opens a sign-in page. */
+  async connectServer(config: McpServerConfig, opts: { interactive?: boolean } = {}): Promise<ConnectedServer> {
     // Check connection limit
     const maxConn = this.settings.getMaxConnections();
     if (this.connections.size >= maxConn) {
@@ -168,7 +210,11 @@ export class McpManager {
       await this.disconnectServer(config.id);
     }
 
+    let client: Client;
     let transport: any;
+    let effective = config;
+    const interactive = opts.interactive ?? true;
+    let authProvider: OAuthClientProvider | undefined;
 
     if (config.transport === 'stdio') {
       if (!config.command) throw new Error('stdio transport requires a command');
@@ -177,47 +223,30 @@ export class McpManager {
         args: config.args || [],
         env: { ...process.env, ...(config.env || {}) } as Record<string, string>,
       });
-    } else if (config.transport === 'streamable-http') {
-      if (!config.url) throw new Error('streamable-http transport requires a URL');
-      transport = new StreamableHTTPClientTransport(new URL(config.url));
-    } else if (config.transport === 'sse') {
-      if (!config.url) throw new Error('SSE transport requires a URL');
-      // Try streamable-http first (newer protocol), fall back to SSE
-      try {
-        transport = new StreamableHTTPClientTransport(new URL(config.url));
-        const testClient = new Client({ name: 'surge-mcp-browser', version: '1.0.0' });
-        await testClient.connect(transport);
-        // Streamable-http worked — use this connection directly
-        const toolsResult = await testClient.listTools();
-        const tools: McpTool[] = (toolsResult.tools || []).map((t: any) => ({
-          name: t.name,
-          description: t.description || '',
-          inputSchema: t.inputSchema || {},
-          serverId: config.id,
-        }));
-        const server: ConnectedServer = {
-          id: config.id,
-          name: config.name,
-          status: 'connected',
-          tools,
-          config: { ...config, transport: 'streamable-http' },
-        };
-        this.connections.set(config.id, { client: testClient, transport, server });
-        return server;
-      } catch {
-        // Streamable-http failed, fall back to SSE
-        transport = new SSEClientTransport(new URL(config.url));
+      client = new Client({ name: 'surge-mcp-browser', version: '1.0.0' });
+      await client.connect(transport);
+    } else if (config.transport === 'streamable-http' || config.transport === 'sse') {
+      if (!config.url) throw new Error(`${config.transport} transport requires a URL`);
+      // Remote servers may require OAuth sign-in; MCPWeb auto-connects don't.
+      authProvider = this.authHandler && !config.isMcpWeb ? this.authHandler.provider(config, { interactive }) : undefined;
+      const auth = authProvider ? { authProvider } : undefined;
+      const http = () => new StreamableHTTPClientTransport(new URL(config.url!), auth);
+      if (config.transport === 'streamable-http') {
+        ({ client, transport } = await this.connectClient(config, http, interactive));
+      } else {
+        // Try streamable HTTP first (the newer protocol), then SSE. Needing a sign-in isn't a
+        // reason to fall back: that's handled (or reported) by connectClient.
+        try {
+          ({ client, transport } = await this.connectClient(config, http, interactive));
+          effective = { ...config, transport: 'streamable-http' };
+        } catch (err) {
+          if (err instanceof UnauthorizedError || /needs you to sign in|Sign-in/.test(String((err as any)?.message))) throw err;
+          ({ client, transport } = await this.connectClient(config, () => new SSEClientTransport(new URL(config.url!), auth), interactive));
+        }
       }
     } else {
       throw new Error(`Unsupported transport: ${config.transport}`);
     }
-
-    const client = new Client({
-      name: 'surge-mcp-browser',
-      version: '1.0.0',
-    });
-
-    await client.connect(transport);
 
     // Discover tools
     const toolsResult = await client.listTools();
@@ -233,14 +262,15 @@ export class McpManager {
       name: config.name,
       status: 'connected',
       tools,
-      config,
+      config: effective,
+      ...(authProvider && (await authProvider.tokens()) ? { signedIn: true } : {}),
     };
 
     this.connections.set(config.id, { client, transport, server });
 
     // Save to persistent config (skip MCPWeb ephemeral connections)
     if (!config.isMcpWeb) {
-      this.saveServerConfig(config);
+      this.saveServerConfig(effective);
     }
 
     return server;
@@ -501,7 +531,7 @@ export class McpManager {
     const saved: McpServerConfig[] = this.settings.get('mcp.savedServers') || [];
     for (const config of saved) {
       try {
-        await this.connectServer(config);
+        await this.connectServer(config, { interactive: false }); // never pops up a sign-in page
       } catch {
         // Skip failed reconnections silently
       }
