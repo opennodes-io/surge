@@ -17,6 +17,7 @@ import { BrowserService } from './services/browser-service';
 import { registerLocalDataHandlers } from './services/local-data';
 import { registerAgentHandlers } from './services/agents';
 import { registerHubHandlers } from './services/surge-hub';
+import { McpOAuth } from './services/mcp-oauth';
 import { ElectronBrowserPort } from './services/electron-browser-port';
 
 let aiService: AiService;
@@ -44,6 +45,9 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
       .catch((err) => console.error('[onp] could not record the call:', err?.message ?? err));
   });
   mcpManager = new McpManager(settingsService);
+  // OAuth sign-in for remote MCP servers ("Connect my accounts"): system browser + loopback callback.
+  const mcpOAuth = new McpOAuth(secretStore, settingsService);
+  mcpManager.setAuthHandler(mcpOAuth);
   searchService = new SearchService(mcpManager);
   mcpWebDetector = new McpWebDetector();
   browserService = new BrowserService(getBrowserView);
@@ -162,13 +166,25 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   });
 
   // ── MCP Handlers ───────────────────────────────────────
-  ipcMain.handle('mcp:connect', async (_event, config: any) => {
+  ipcMain.handle('mcp:connect', async (event, config: any) => {
+    // Sign-in progress (if the server needs OAuth) goes to the window that asked.
+    mcpOAuth.onStatus = (status) => { if (!event.sender.isDestroyed()) event.sender.send('mcp:authStatus', status); };
     try {
       const server = await mcpManager.connectServer(config);
       return { success: true, server };
     } catch (err: any) {
       return { error: err.message };
     }
+  });
+
+  ipcMain.handle('mcp:cancelSignIn', (_event, serverId: string) => { mcpOAuth.cancel(serverId); return true; });
+
+  // Sign out: forget the server's OAuth tokens and registration, and disconnect it.
+  ipcMain.handle('mcp:signOut', async (_event, serverId: string) => {
+    const server = mcpManager.getConnectedServers().find((s) => s.id === serverId);
+    if (server) mcpOAuth.forget(server.config);
+    await mcpManager.disconnectServer(serverId);
+    return { success: true };
   });
 
   ipcMain.handle('mcp:disconnect', async (_event, serverId: string) => {

@@ -50,6 +50,13 @@ contextBridge.exposeInMainWorld('surge', {
   mcp: {
     connect: (config: any) => ipcRenderer.invoke('mcp:connect', config),
     disconnect: (serverId: string) => ipcRenderer.invoke('mcp:disconnect', serverId),
+    cancelSignIn: (serverId: string) => ipcRenderer.invoke('mcp:cancelSignIn', serverId),
+    signOut: (serverId: string) => ipcRenderer.invoke('mcp:signOut', serverId),
+    onAuthStatus: (callback: (status: any) => void) => {
+      const handler = (_event: any, status: any) => callback(status);
+      ipcRenderer.on('mcp:authStatus', handler);
+      return () => ipcRenderer.removeListener('mcp:authStatus', handler);
+    },
     getServers: () => ipcRenderer.invoke('mcp:getServers'),
     getTools: (serverId?: string) => ipcRenderer.invoke('mcp:getTools', serverId),
     callTool: (serverId: string, toolName: string, args: any) =>
