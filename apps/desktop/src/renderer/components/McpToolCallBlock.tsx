@@ -21,9 +21,16 @@ interface McpToolCallBlockProps {
 
 // ── Rich Content Renderers ──────────────────────────────
 
+// MCP results are content blocks ({ type: 'text', text } …), not records. Tabulating them is what
+// showed getPageContent as a TYPE / TEXT table.
+const MCP_CONTENT_TYPES = new Set(['text', 'image', 'audio', 'resource', 'resource_link']);
+
 // Detect if data is tabular (array of objects with consistent keys)
 function detectTable(data: any): { isTable: boolean; headers: string[]; rows: any[][] } {
   if (!Array.isArray(data) || data.length === 0) return { isTable: false, headers: [], rows: [] };
+  if (data.every((item: any) => item && typeof item === 'object' && MCP_CONTENT_TYPES.has(item.type))) {
+    return { isTable: false, headers: [], rows: [] };
+  }
   // All items must be plain objects with at least one key
   const allObjects = data.every(
     (item: any) => item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).length > 0
@@ -106,6 +113,72 @@ function extractUiHints(result: any): McpUiHints {
   }
   return {};
 }
+
+// ── One-line description for the collapsed header ───────
+const TOOL_LABELS: Record<string, string> = {
+  // Browser (page tools)
+  getPageContent: 'Read the page',
+  getPageMetadata: 'Looked at the page details',
+  navigateTo: 'Opened a page',
+  clickElement: 'Clicked',
+  fillInput: 'Typed into a field',
+  getLinks: 'Listed the links',
+  getFormFields: 'Listed the form fields',
+  evaluateScript: 'Ran a script on the page',
+  scrollPage: 'Scrolled',
+  getSelectedText: 'Read the selection',
+  waitForSelector: 'Waited for the page',
+  selectOption: 'Picked an option',
+  checkElement: 'Ticked a box',
+  hoverElement: 'Hovered',
+  getElementText: 'Read an element',
+  getElementAttribute: 'Read an attribute',
+  getTableData: 'Read a table',
+  waitForNavigation: 'Waited for the page to load',
+  pressKey: 'Pressed a key',
+  detectMcpBTools: "Checked the page's MCP-B tools",
+  callMcpBTool: 'Used a page tool',
+  // Bookmarks & history
+  bookmark_add: 'Saved a bookmark',
+  bookmark_list: 'Listed bookmarks',
+  bookmark_search: 'Searched bookmarks',
+  history_record: 'Recorded history',
+  history_search: 'Searched history',
+  history_list: 'Listed history',
+};
+
+const humanize = (name: string) => {
+  const words = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim().toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+};
+
+const hostOf = (url: unknown) => {
+  try { return new URL(String(url)).hostname; } catch { return typeof url === 'string' ? url : undefined; }
+};
+
+function describeCall(data: ToolCallData): { label: string; detail?: string } {
+  const label = TOOL_LABELS[data.toolName] || humanize(data.toolName);
+  const args = data.args || {};
+  if (data.status === 'error') {
+    const first = extractText(data.result).split('\n')[0].replace(/^Error:\s*/, '');
+    return { label, detail: first };
+  }
+  switch (data.toolName) {
+    case 'navigateTo': return { label, detail: hostOf(args.url) };
+    case 'getPageContent':
+      return { label, detail: data.status === 'success' ? `${extractText(data.result).length.toLocaleString()} characters` : undefined };
+    case 'clickElement': case 'fillInput': case 'hoverElement': case 'getElementText':
+    case 'checkElement': case 'selectOption': case 'waitForSelector': case 'getElementAttribute':
+      return { label, detail: args.selector };
+    case 'pressKey': return { label, detail: args.key };
+    case 'scrollPage': return { label, detail: args.direction || args.selector };
+    case 'callMcpBTool': return { label, detail: args.toolName };
+    case 'bookmark_search': case 'history_search': return { label, detail: args.query };
+    default: return { label };
+  }
+}
+
+const formatDuration = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
 
 // ── Table Renderer ──────────────────────────────────────
 const RichTable: React.FC<{ headers: string[]; rows: any[][]; uiHints: McpUiHints }> = ({ headers, rows, uiHints }) => {
@@ -332,13 +405,15 @@ const McpToolCallBlock: React.FC<McpToolCallBlockProps> = ({ data }) => {
     return JSON.stringify(content, null, 2);
   };
 
+  const call = describeCall(data);
+
   return (
     <div className={`tcb ${data.status}`}>
-      <div className="tcb-header" onClick={() => setExpanded(!expanded)}>
+      <div className="tcb-header" onClick={() => setExpanded(!expanded)} title={`${data.serverName || data.serverId} · ${data.toolName}`}>
         <div className="tcb-left">
           {statusIcon()}
-          <span className="tcb-server badge badge-cyan">{data.serverName || data.serverId}</span>
-          <span className="tcb-tool-name">{data.toolName}</span>
+          <span className="tcb-label">{call.label}</span>
+          {call.detail && <span className="tcb-detail">{call.detail}</span>}
           {hasRichContent && (
             <span className="badge badge-purple" style={{ fontSize: '0.55rem' }}>
               {richContent!.images.length > 0 && '🖼️'}
@@ -348,7 +423,7 @@ const McpToolCallBlock: React.FC<McpToolCallBlockProps> = ({ data }) => {
         </div>
         <div className="tcb-right">
           {data.durationMs !== undefined && (
-            <span className="tcb-duration badge badge-green">{data.durationMs}ms</span>
+            <span className="tcb-duration">{formatDuration(data.durationMs)}</span>
           )}
           <span className="tcb-chevron">{expanded ? '▲' : '▼'}</span>
         </div>
@@ -389,6 +464,14 @@ const McpToolCallBlock: React.FC<McpToolCallBlockProps> = ({ data }) => {
 
       {expanded && (
         <div className="tcb-details fade-in">
+          <div className="tcb-section">
+            <div className="tcb-section-label">Tool</div>
+            <div className="tcb-meta">
+              <span className="tcb-server badge badge-cyan">{data.serverName || data.serverId}</span>
+              <span className="tcb-tool-name">{data.toolName}</span>
+            </div>
+          </div>
+
           <div className="tcb-section">
             <div className="tcb-section-label">Arguments</div>
             <pre className="tcb-code">
