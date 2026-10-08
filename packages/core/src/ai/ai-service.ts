@@ -18,6 +18,8 @@ export interface AiModel {
   supportsToolCalling: boolean;
   level: ModelLevel;       // Quick / Smart / Best classification
   costEstimate: string;    // e.g. "Free", "~$0.01/msg"
+  /** Set when the model can't be used yet, with what to do about it (e.g. "Needs a Groq API key …"). */
+  needs?: string;
 }
 
 /** One settled ONP call — what the chat shows under a reply, and what spend tracking counted. */
@@ -297,7 +299,53 @@ export class AiService {
         .filter(Boolean);
       return notes.length ? { ...m, description: `${m.description} · ${notes.join(' · ')}` } : m;
     });
-    return [...this.getAvailableModels(), ...onp];
+    return [...(await this.withSetupNotes(this.getAvailableModels())), ...onp];
+  }
+
+  /** Marks built-in models that can't run yet (no key, no endpoint, Ollama down or missing the model). */
+  private async withSetupNotes(models: AiModel[]): Promise<AiModel[]> {
+    const ollama = models.some((m) => m.id === 'ollama-local') ? await this.probeOllama() : null;
+    return models.map((m) => {
+      const needs = this.setupNeeded(m.id, ollama);
+      return needs ? { ...m, needs } : m;
+    });
+  }
+
+  /** What a built-in model is missing, or null if it's ready. `ollamaModels` null = Ollama unreachable. */
+  private setupNeeded(modelKey: string, ollamaModels: string[] | null | undefined): string | null {
+    const key = (name: string, where: string) => `Needs a ${name} API key${where ? ` (${where})` : ''}: add it in Settings → API Keys`;
+    switch (modelKey) {
+      case 'gemini-flash-lite':
+      case 'gemini-pro': return this.geminiClient ? null : key('Gemini', 'free at aistudio.google.com');
+      case 'groq-llama': return this.groqClient ? null : key('Groq', 'free at console.groq.com');
+      case 'claude-sonnet':
+      case 'claude-opus': return this.claudeClient ? null : key('Claude', '');
+      case 'mistral-large': return this.mistralClient ? null : key('Mistral', '');
+      case 'vllm-custom': return this.vllmClient ? null : 'Needs your vLLM / OpenAI-compatible endpoint: set it in Settings → API Keys';
+      case 'ollama-local': {
+        if (ollamaModels === undefined) return null; // not probed (e.g. while building an error message)
+        const host = this.settings.get('ai.ollamaHost') || 'http://localhost:11434';
+        const model = this.getModelId(modelKey);
+        if (ollamaModels === null) return `Ollama isn't running at ${host}: start it, or install it from ollama.com`;
+        return ollamaModels.some((n) => n === model || n.startsWith(`${model}:`)) ? null : `Run "ollama pull ${model}" first`;
+      }
+      default: return null;
+    }
+  }
+
+  private ollamaProbe: { at: number; models: string[] | null } = { at: 0, models: null };
+
+  /** Model names the local Ollama serves, or null if it can't be reached (cached 30s). */
+  private async probeOllama(): Promise<string[] | null> {
+    if (Date.now() - this.ollamaProbe.at < 30_000) return this.ollamaProbe.models;
+    const host = (this.settings.get('ai.ollamaHost') || 'http://localhost:11434').replace(/\/+$/, '');
+    let models: string[] | null = null;
+    try {
+      const res = await fetch(`${host}/api/tags`, { signal: AbortSignal.timeout(1500) });
+      if (res.ok) models = ((await res.json())?.models ?? []).map((m: any) => String(m.name));
+    } catch { /* unreachable */ }
+    this.ollamaProbe = { at: Date.now(), models };
+    return models;
   }
 
   /** Private mode: model calls go only to the user's own machines (local Ollama and LAN peers). */
@@ -607,7 +655,7 @@ export class AiService {
 
     const { client, modelId } = this.getClientForModel(modelKey);
     if (!client && !modelKey.startsWith('onp:')) {
-      throw new Error(`No client configured for model: ${modelKey}. Please set the API key in Settings.`);
+      throw new Error(this.setupNeeded(modelKey, undefined) || `No client configured for model: ${modelKey}. Please set the API key in Settings.`);
     }
 
     const { data: response, onp } = await this.createCompletion(modelKey, client, {
@@ -658,7 +706,7 @@ export class AiService {
 
       const { client, modelId } = this.getClientForModel(modelKey);
       if (!client && !modelKey.startsWith('onp:')) {
-        throw new Error(`No client configured for model: ${modelKey}. Please set the API key in Settings.`);
+        throw new Error(this.setupNeeded(modelKey, undefined) || `No client configured for model: ${modelKey}. Please set the API key in Settings.`);
       }
 
       // Build OpenAI request params (ONP sets `model` per offering in invokeOnp)
@@ -833,9 +881,7 @@ export class AiService {
   }
 
   private async chatGemini(messages: any[], modelKey: string): Promise<any> {
-    if (!this.geminiClient) {
-      throw new Error('Gemini API key not configured. Get a free key at ai.google.dev');
-    }
+    if (!this.geminiClient) throw new Error(this.setupNeeded(modelKey, undefined)!);
 
     const modelId = this.getModelId(modelKey);
     // System prompts go in systemInstruction (getGenerativeModel turns a string into Content),
@@ -863,9 +909,7 @@ export class AiService {
     callbacks: StreamCallbacks,
     tools?: ToolDefinition[]
   ): Promise<void> {
-    if (!this.geminiClient) {
-      throw new Error('Gemini API key not configured. Get a free key at ai.google.dev');
-    }
+    if (!this.geminiClient) throw new Error(this.setupNeeded(modelKey, undefined)!);
 
     const modelId = this.getModelId(modelKey);
 

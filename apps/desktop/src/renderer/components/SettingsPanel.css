@@ -171,9 +171,20 @@
   box-shadow: 0 0 12px rgba(6, 182, 212, 0.15);
 }
 
-.model-card.locked {
-  opacity: 0.5;
-  cursor: not-allowed;
+/* Can't be used yet (no key, no endpoint, Ollama down): dimmed, with what to do about it. */
+.model-card.needs-setup {
+  cursor: default;
+}
+
+.model-card.needs-setup > :not(.model-card-needs) {
+  opacity: 0.55;
+}
+
+.model-card-needs {
+  font-size: var(--text-xs);
+  color: var(--accent-orange);
+  line-height: 1.35;
+  margin-top: var(--space-xs);
 }
 
 .model-card-icon {

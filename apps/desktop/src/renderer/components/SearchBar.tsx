@@ -12,6 +12,8 @@ interface SearchBarProps {
   onSelectModel: (id: string) => void;
   privateMode: boolean;
   onTogglePrivate: () => void;
+  /** Re-read the model list (e.g. a key was added or Ollama started) when the picker opens. */
+  onRefreshModels?: () => void;
 }
 
 // Level metadata for the Quick/Smart/Best UI
@@ -30,6 +32,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
   onSelectModel,
   privateMode,
   onTogglePrivate,
+  onRefreshModels,
 }) => {
   const [query, setQuery] = useState('');
   const [showModels, setShowModels] = useState(false);
@@ -155,6 +158,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
             ref={modelBtnRef}
             className={`model-btn btn-ghost btn-sm ${currentLevelMeta.className}`}
             onClick={() => {
+              if (!showModels) onRefreshModels?.();
               setShowModels(!showModels);
               setExpandedLevel(null);
             }}
@@ -205,12 +209,15 @@ const SearchBar: React.FC<SearchBarProps> = ({
                         {levelModels.map(m => (
                           <button
                             key={m.id}
-                            className={`model-option ${m.id === selectedModel ? 'active' : ''}`}
-                            onClick={() => { onSelectModel(m.id); setShowModels(false); setExpandedLevel(null); }}
+                            className={`model-option ${m.id === selectedModel ? 'active' : ''} ${m.needs ? 'needs-setup' : ''}`}
+                            aria-disabled={m.needs ? true : undefined}
+                            title={m.needs}
+                            onClick={() => { if (m.needs) return; onSelectModel(m.id); setShowModels(false); setExpandedLevel(null); }}
                           >
                             <div className="model-option-info">
                               <div className="model-option-name">{m.name}</div>
                               <div className="model-option-desc">{m.description}</div>
+                              {m.needs && <div className="model-option-needs">{m.needs}</div>}
                             </div>
                             <span className="model-option-cost">{m.costEstimate}</span>
                           </button>
