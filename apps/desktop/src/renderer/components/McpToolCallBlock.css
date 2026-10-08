@@ -40,6 +40,39 @@
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+  flex: 1;
+  min-width: 0;
+}
+
+/* Collapsed header: what happened, in words, plus one detail (host, selector, size). */
+.tcb-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.tcb-detail {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tcb-duration {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tcb-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
 }
 
 .tcb-right {
