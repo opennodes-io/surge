@@ -169,6 +169,11 @@ Verification scripts for the ONP integration:
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Private mode with tools.* Local models without tool support fail through the router: Surge's prompt-based tool fallback only triggers for `vllm-custom` / `ollama-local`.
   - *Heavy prompts.* The chat sends all 27 browser + bookmarks tool definitions every turn (~3.2k prompt tokens), which is slow on small CPU nodes and inflates paid ceilings.
+- **Social channels** (`apps/desktop/src/main/services/channels.ts`, `ChannelsPanel.tsx`): Instagram, TikTok, X, Facebook, YouTube, LinkedIn and Reddit, read in the embedded browser with the user's own sign-in (default session cookies).
+  - "Signed in" means the site's session cookie is present (`sessionid`, `auth_token`, `c_user`, `LOGIN_INFO`, `li_at`, `reddit_session`). Sign out clears the domain's cookies.
+  - **Summarize my feed** opens the feed and asks the chat to use `browser__collectFeed`. The tool waits up to 8s for posts, scrolls ≤ 8 screens, collects the outermost post elements (`article`, `[role=article]`, tweets, `ytd-*-renderer`, `shreddit-post`, LinkedIn and TikTok feed items), dedupes them, and returns text plus permalink.
+  - Bounded on purpose: read-only, user-initiated, never crawls. Its tool ceiling is 8s + 1.5s per scroll + 5s. The hub counts it as read-only.
+  - Verified on a mock infinite-scroll feed (nested quote not double-counted, no duplicates) and on a public reddit.com/r/programming. No real social accounts were used.
 - **OAuth for remote MCP servers** (`apps/desktop/src/main/services/mcp-oauth.ts`, `McpAuthHandler` in core).
   - On a 401, the SDK runs discovery, dynamic client registration and PKCE, and the provider opens the system browser. The code comes back on a loopback callback (`http://127.0.0.1:<mcp.oauthCallbackPort, 4767>/oauth/callback`) that listens only while a sign-in is pending. `McpManager.connectClient` then calls `finishAuth` and reconnects.
   - The client registration and tokens are stored per server URL in the keychain (`mcp.oauth.<host><path>#client|tokens`), so reconnects reuse them. Sign out forgets them.

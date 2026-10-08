@@ -7,8 +7,10 @@ import WebBrowserBar from './components/WebBrowserBar';
 import McpWebPanel from './components/McpWebPanel';
 import AgentApprovalModal from './components/AgentApprovalModal';
 import HistoryPanel from './components/HistoryPanel';
-import { IconNewChat, IconHistory, IconBolt, IconGlobe, IconSettings, IconMinus, IconX, IconMaximize, IconRestore } from './components/Icons';
+import ChannelsPanel from './components/ChannelsPanel';
+import { IconNewChat, IconHistory, IconShare, IconBolt, IconGlobe, IconSettings, IconMinus, IconX, IconMaximize, IconRestore } from './components/Icons';
 import { PRIVATE_AUTO_MODEL, ONP_AUTO_MODEL } from './types';
+import type { SocialChannel } from './types';
 import type { AppMode, ChatMessage, AiModel, OnpCall, McpWebCapabilities, McpWebConnectResult, McpBDetectResult, WebAgentSpec } from './types';
 import type { ToolCallData } from './components/McpToolCallBlock';
 import './styles/app.css';
@@ -44,6 +46,7 @@ const App: React.FC = () => {
   const sessionIdRef = useRef<string | null>(null);
   const setSession = useCallback((id: string | null) => { sessionIdRef.current = id; setSessionId(id); }, []);
   const [showHistory, setShowHistory] = useState(false);
+  const [showChannels, setShowChannels] = useState(false);
   // The current turn's tool calls, read when the turn ends (state would be stale in that closure).
   const liveToolCalls = useRef<ToolCallData[]>([]);
   const browserUrlRef = useRef('');
@@ -339,6 +342,21 @@ const App: React.FC = () => {
     }
   }, [messages, isStreaming, selectedModel, navigateToUrl, setSession]);
 
+  // Channels: open a feed (sign in there the first time), or open it and ask for a summary that
+  // reads it with browser__collectFeed.
+  const openChannel = useCallback((c: SocialChannel) => {
+    setShowChannels(false);
+    navigateToUrl(c.home);
+  }, [navigateToUrl]);
+
+  const summarizeChannel = useCallback(async (c: SocialChannel) => {
+    setShowChannels(false);
+    if (!browserUrl.includes(c.domain)) await navigateToUrl(c.home);
+    handleSubmit(`Summarize my ${c.name} feed. Use browser__collectFeed to gather the posts on the open page (it scrolls a few screens), `
+      + 'then give me the main themes, the most notable posts with who posted them, and anything that looks like it needs my attention. '
+      + "Only read: don't open posts, like, comment or post anything.");
+  }, [browserUrl, navigateToUrl, handleSubmit]);
+
   // MCP-UI host "prompt" actions: an embedded MCP App can push a prompt into the chat.
   useEffect(() => {
     const onPrompt = (e: Event) => {
@@ -448,8 +466,16 @@ const App: React.FC = () => {
   const toggleHistory = useCallback(() => {
     const next = !showHistory;
     setShowHistory(next);
+    setShowChannels(false);
     if (mode === 'idle') window.surge?.window?.resize(next ? 'expanded' : 'compact');
   }, [showHistory, mode]);
+
+  const toggleChannels = useCallback(() => {
+    const next = !showChannels;
+    setShowChannels(next);
+    setShowHistory(false);
+    if (mode === 'idle') window.surge?.window?.resize(next ? 'expanded' : 'compact');
+  }, [showChannels, mode]);
 
   // Reopen a saved chat: its messages (with tool calls and receipts), its model if it still works,
   // and the page it was about.
@@ -555,6 +581,9 @@ const App: React.FC = () => {
           )}
           <button className={`btn-icon ${showHistory ? 'active' : ''}`} onClick={toggleHistory} title="Chat history">
             <IconHistory size={15} />
+          </button>
+          <button className={`btn-icon ${showChannels ? 'active' : ''}`} onClick={toggleChannels} title="Channels (social feeds)">
+            <IconShare size={15} />
           </button>
           <button className="btn-icon" onClick={() => {
             if (mode === 'idle') {
@@ -702,6 +731,10 @@ const App: React.FC = () => {
 
             {showServers && (
               <ServerPanel onClose={() => setShowServers(false)} />
+            )}
+
+            {showChannels && (
+              <ChannelsPanel onOpen={openChannel} onSummarize={summarizeChannel} onClose={toggleChannels} />
             )}
 
             {showHistory && (

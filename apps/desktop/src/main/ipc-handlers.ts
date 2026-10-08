@@ -18,6 +18,7 @@ import { registerLocalDataHandlers } from './services/local-data';
 import { registerAgentHandlers } from './services/agents';
 import { registerHubHandlers } from './services/surge-hub';
 import { McpOAuth } from './services/mcp-oauth';
+import { registerChannelHandlers } from './services/channels';
 import { ElectronBrowserPort } from './services/electron-browser-port';
 
 let aiService: AiService;
@@ -69,6 +70,9 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   // ── Agentic per-site agents (generate → approve → persist → virtual server) ──
   const browserPort = new ElectronBrowserPort(getBrowserView);
   registerAgentHandlers(mcpManager, aiService, browserService, browserPort, settingsService);
+
+  // ── Social channels: feeds read in the embedded browser with the user's own sign-in ──
+  registerChannelHandlers();
 
   // ── Surge hub: a local MCP server other AI apps can use (off by default) ──
   registerHubHandlers(mcpManager, settingsService, secretStore);
