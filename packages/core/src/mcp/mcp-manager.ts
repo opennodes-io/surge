@@ -351,11 +351,13 @@ export class McpManager {
 
   // ── Tool Inventory for AI ───────────────────────────────
   // Returns OpenAI-compatible tool definitions for function calling
-  getToolDefinitions(): ToolDefinition[] {
+  /** Tool definitions of the connected servers, optionally narrowed by `include(serverId, toolName)`. */
+  getToolDefinitions(include?: (serverId: string, toolName: string) => boolean): ToolDefinition[] {
     const tools: ToolDefinition[] = [];
     for (const server of this.getConnectedServers()) {
       if (server.status !== 'connected') continue;
       for (const tool of server.tools) {
+        if (include && !include(server.id, tool.name)) continue;
         tools.push({
           type: 'function',
           function: {
@@ -385,20 +387,12 @@ export class McpManager {
       '',
     ];
 
+    // One line per server. The tools themselves (names, descriptions, parameters) travel as tool
+    // definitions, and the prompt-based fallback lists them itself; repeating them here doubled the
+    // prompt (~3k tokens a turn, slow on small local models and pricier on paid ones).
     for (const server of servers) {
-      lines.push(`### ${server.name} (${server.id})`);
-      if (server.tools.length === 0) {
-        lines.push('  No tools available.');
-      } else {
-        for (const tool of server.tools) {
-          lines.push(`- **${server.id}__${tool.name}**: ${tool.description}`);
-          if (tool.inputSchema?.properties) {
-            const params = Object.keys(tool.inputSchema.properties).join(', ');
-            lines.push(`  Parameters: ${params}`);
-          }
-        }
-      }
-      lines.push('');
+      const n = server.tools.length;
+      lines.push(`- ${server.name} (${server.id}): ${n} tool${n === 1 ? '' : 's'}`);
     }
 
     return lines.join('\n');

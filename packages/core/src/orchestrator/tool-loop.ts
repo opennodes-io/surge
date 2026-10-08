@@ -39,7 +39,11 @@ export interface ToolLoopOptions {
   model: string;
   /** Conversation is mutated in place as the loop appends assistant/tool turns. */
   conversation: ChatMessageWithTools[];
-  toolDefs: ToolDefinition[];
+  /**
+   * The tools offered to the model. A function is re-read every round, so a tool call that changes
+   * what's available (e.g. opening a page) takes effect for the rest of the turn.
+   */
+  toolDefs: ToolDefinition[] | (() => ToolDefinition[]);
   systemPrompt?: string;
   executeTool: (tc: PendingToolCall) => Promise<ToolExecutionResult>;
   callbacks: ToolLoopCallbacks;
@@ -55,7 +59,7 @@ export interface ToolLoopOptions {
 export async function runToolLoop(opts: ToolLoopOptions): Promise<void> {
   const { ai, model, conversation, toolDefs, systemPrompt, executeTool, callbacks } = opts;
   const maxRounds = opts.maxRounds ?? 10;
-  const hasTools = toolDefs.length > 0;
+  const currentTools = () => (typeof toolDefs === 'function' ? toolDefs() : toolDefs);
   let round = 0;
   let streamEndSent = false;
 
@@ -144,7 +148,7 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<void> {
             resolve();
           },
         },
-        hasTools ? toolDefs : undefined,
+        (() => { const defs = currentTools(); return defs.length > 0 ? defs : undefined; })(),
         systemPrompt || undefined,
       ).catch(reject); // a provider that rejects instead of calling onError must still end the turn
     });
