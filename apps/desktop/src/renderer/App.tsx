@@ -19,6 +19,8 @@ const App: React.FC = () => {
   const [streamContent, setStreamContent] = useState('');
   const [selectedModel, setSelectedModel] = useState('gemini-flash-lite');
   const [models, setModels] = useState<AiModel[]>([]);
+  // Set once the startup model has been chosen, so the default isn't saved over the user's last pick.
+  const modelsReady = useRef(false);
   // Private mode: only local/LAN models answer; the model in use before it was turned on comes back after
   const [privateMode, setPrivateMode] = useState(false);
   const modelBeforePrivate = useRef('gemini-flash-lite');
@@ -52,10 +54,24 @@ const App: React.FC = () => {
   } | null>(null);
 
   useEffect(() => {
-    window.surge?.ai?.getModels?.().then(setModels).catch(() => {});
-    window.surge?.private?.status?.().then((st) => {
-      setPrivateMode(st.enabled);
-      if (st.enabled) setSelectedModel(PRIVATE_AUTO_MODEL);
+    // Start on the model used last if it still works; otherwise on one that needs no setup
+    // (OpenNodes Auto, then local Ollama). A fresh install used to start on Gemini and fail
+    // the first message without a key.
+    Promise.all([
+      window.surge?.ai?.getModels?.() ?? Promise.resolve([]),
+      window.surge?.settings?.get('ui.lastModel').catch(() => null),
+      window.surge?.private?.status?.().catch(() => null),
+    ]).then(([list, last, st]: [AiModel[], string | null, any]) => {
+      setModels(list);
+      if (st?.enabled) {
+        setPrivateMode(true);
+        setSelectedModel(PRIVATE_AUTO_MODEL);
+      } else {
+        const usable = (id?: string | null) => !!id && list.some((m) => m.id === id && !m.needs);
+        const pick = [last, ONP_AUTO_MODEL, 'ollama-local'].find(usable) ?? list.find((m) => !m.needs)?.id;
+        if (pick) setSelectedModel(pick);
+      }
+      modelsReady.current = true;
     }).catch(() => {});
     // Load saved theme
     window.surge?.settings?.get('ui.theme').then((theme: string) => {
@@ -359,6 +375,13 @@ const App: React.FC = () => {
     ? models.find((m) => (m.id === ONP_AUTO_MODEL || m.id === PRIVATE_AUTO_MODEL) && m.id !== barNotice.failedModel)
     : undefined;
 
+  // Remember the model for next time (private-mode models are tied to the session's mode).
+  useEffect(() => {
+    if (modelsReady.current && !selectedModel.startsWith('private:')) {
+      window.surge?.settings?.set('ui.lastModel', selectedModel).catch(() => {});
+    }
+  }, [selectedModel]);
+
   // A notice belongs to the page it was about.
   useEffect(() => { setBarNotice(null); }, [browserUrl]);
 
@@ -526,6 +549,7 @@ const App: React.FC = () => {
                 selectedModel={selectedModel}
                 models={models}
                 onSelectModel={setSelectedModel}
+                onRefreshModels={() => { window.surge?.ai?.getModels?.().then(setModels).catch(() => {}); }}
                 privateMode={privateMode}
                 onTogglePrivate={togglePrivate}
               />

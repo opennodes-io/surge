@@ -164,6 +164,8 @@ export interface OnpSpend {
 export type ModelLevel = 'quick' | 'smart' | 'best';
 
 export interface AiModel {
+  /** Set when the model can't be used yet, with what to do about it. */
+  needs?: string;
   id: string;
   name: string;
   provider: string;

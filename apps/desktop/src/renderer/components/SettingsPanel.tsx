@@ -258,12 +258,15 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                     {levelModels.map(m => (
                       <button
                         key={m.id}
-                        className={`model-card ${m.id === selectedModel ? 'active' : ''}`}
-                        onClick={() => onSelectModel(m.id)}
+                        className={`model-card ${m.id === selectedModel ? 'active' : ''} ${m.needs ? 'needs-setup' : ''}`}
+                        aria-disabled={m.needs ? true : undefined}
+                        title={m.needs}
+                        onClick={() => { if (!m.needs) onSelectModel(m.id); }}
                       >
                         <div className="model-card-icon"><IconBot size={20} /></div>
                         <div className="model-card-name">{m.name}</div>
                         <div className="model-card-desc">{m.description}</div>
+                        {m.needs && <div className="model-card-needs">{m.needs}</div>}
                         <div className="model-card-cost">{m.costEstimate}</div>
                       </button>
                     ))}
