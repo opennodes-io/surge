@@ -42,8 +42,14 @@ const App: React.FC = () => {
   // Per-site agent generation/approval
   const [agentProposal, setAgentProposal] = useState<{ spec: WebAgentSpec; usesCode: boolean } | null>(null);
   const [creatingAgent, setCreatingAgent] = useState(false);
-  // Why the last "Create agent" didn't produce a proposal, shown under the browser bar.
-  const [agentNotice, setAgentNotice] = useState<{ text: string; failedModel?: string } | null>(null);
+  // One message under the browser bar: why "Create agent" failed (with a retry on a keyless model),
+  // or what "Check for MCPWeb support" found (with Connect when there's a server).
+  const [barNotice, setBarNotice] = useState<{
+    text: string;
+    tone: 'error' | 'info' | 'success';
+    failedModel?: string;
+    action?: { label: string; run: () => void };
+  } | null>(null);
 
   useEffect(() => {
     window.surge?.ai?.getModels?.().then(setModels).catch(() => {});
@@ -328,19 +334,19 @@ const App: React.FC = () => {
   const createAgent = useCallback(async (model: string) => {
     if (creatingAgent) return;
     setCreatingAgent(true);
-    setAgentNotice(null);
+    setBarNotice(null);
     const modelName = models.find((m) => m.id === model)?.name || model;
     try {
       const res = await window.surge.agents.generate(model);
       if (res.success && res.spec && res.spec.tools.length > 0) {
         setAgentProposal({ spec: res.spec, usesCode: !!res.usesCode });
       } else if (res.success) {
-        setAgentNotice({ text: `${modelName} found nothing on this page to turn into agent tools.`, failedModel: model });
+        setBarNotice({ tone: 'error', text: `${modelName} found nothing on this page to turn into agent tools.`, failedModel: model });
       } else {
-        setAgentNotice({ text: `Couldn't create an agent with ${modelName}: ${res.error || 'unknown error'}`, failedModel: model });
+        setBarNotice({ tone: 'error', text: `Couldn't create an agent with ${modelName}: ${res.error || 'unknown error'}`, failedModel: model });
       }
     } catch (err: any) {
-      setAgentNotice({ text: `Couldn't create an agent with ${modelName}: ${err.message || 'unknown error'}`, failedModel: model });
+      setBarNotice({ tone: 'error', text: `Couldn't create an agent with ${modelName}: ${err.message || 'unknown error'}`, failedModel: model });
     } finally {
       setCreatingAgent(false);
     }
@@ -349,12 +355,57 @@ const App: React.FC = () => {
   const handleCreateAgent = useCallback(() => createAgent(selectedModel), [createAgent, selectedModel]);
 
   // Offer a retry on a model that needs no API key: OpenNodes Auto, or auto-private in private mode.
-  const agentRetryModel = agentNotice?.failedModel
-    ? models.find((m) => (m.id === ONP_AUTO_MODEL || m.id === PRIVATE_AUTO_MODEL) && m.id !== agentNotice.failedModel)
+  const agentRetryModel = barNotice?.failedModel
+    ? models.find((m) => (m.id === ONP_AUTO_MODEL || m.id === PRIVATE_AUTO_MODEL) && m.id !== barNotice.failedModel)
     : undefined;
 
   // A notice belongs to the page it was about.
-  useEffect(() => { setAgentNotice(null); }, [browserUrl]);
+  useEffect(() => { setBarNotice(null); }, [browserUrl]);
+
+  // "Check for MCPWeb support": a server-side MCPWeb endpoint (/.well-known/mcp) and browser-native
+  // MCP-B tools registered by the open page. The answer goes in the notice under the bar.
+  const checkMcpWeb = useCallback(async (url: string) => {
+    setBarNotice(null);
+    let host = url;
+    try { host = new URL(url).hostname; } catch { /* keep the raw text */ }
+    const [caps, mcpB] = await Promise.all([
+      window.surge.mcpweb.detect(url).catch((err: any) => ({ supported: false, url, error: err?.message }) as any),
+      window.surge.browser.detectMcpB().catch(() => null),
+    ]);
+    if (caps?.supported) {
+      const n = caps.tools?.length ?? 0;
+      const name = caps.serverInfo?.name ? ` (${caps.serverInfo.name})` : '';
+      setBarNotice({
+        tone: 'success',
+        text: `${host} has an MCPWeb server${name} with ${n} tool${n === 1 ? '' : 's'}.`,
+        action: mcpWebConnected ? undefined : { label: 'Connect', run: () => { setBarNotice(null); navigateToUrl(url); } },
+      });
+    } else if (mcpB?.supported && (mcpB.tools?.length ?? 0) > 0) {
+      const tools = mcpB.tools!;
+      const names = tools.slice(0, 3).map((t) => t.name).join(', ') + (tools.length > 3 ? ', …' : '');
+      setBarNotice({ tone: 'success', text: `This page registers ${tools.length} MCP-B tool${tools.length === 1 ? '' : 's'} (${names}). The AI can call them through the Browser tools.` });
+    } else if (caps?.error) {
+      setBarNotice({ tone: 'error', text: `Couldn't check ${host} for MCPWeb: ${caps.error}` });
+    } else {
+      setBarNotice({ tone: 'info', text: `${host} has no MCPWeb server (/.well-known/mcp), and the page registers no MCP-B tools. The AI can still read and use the page through the Browser tools, or press \u2728 to create an agent for it.` });
+    }
+  }, [mcpWebConnected, navigateToUrl]);
+
+  // The globe shows or hides the page. The page view keeps its last page even after New Chat
+  // cleared the URL, so showing it re-syncs the URL bar from the page itself.
+  const toggleBrowser = useCallback(async () => {
+    if (showBrowser) {
+      setShowBrowser(false);
+      window.surge?.browser?.hide();
+      return;
+    }
+    setShowBrowser(true);
+    window.surge?.browser?.show();
+    if (!browserUrl) {
+      const url = await window.surge?.browser?.getUrl?.();
+      if (url && /^https?:/i.test(url)) setBrowserUrl(url);
+    }
+  }, [showBrowser, browserUrl]);
 
   // Settings takes the whole window: the web page steps aside while it's open and comes back on
   // close. Closing returns to the chat (or the open page), or to idle if there's neither.
@@ -373,7 +424,7 @@ const App: React.FC = () => {
   const handleApproveAgent = useCallback(async (spec: WebAgentSpec) => {
     const res = await window.surge.agents.save(spec);
     setAgentProposal(null);
-    if (!res.success) setAgentNotice({ text: `Couldn't save the agent: ${res.error || 'unknown error'}` });
+    if (!res.success) setBarNotice({ tone: 'error', text: `Couldn't save the agent: ${res.error || 'unknown error'}` });
   }, []);
 
   return (
@@ -396,7 +447,7 @@ const App: React.FC = () => {
             <IconBolt size={15} />
           </button>
           {mode !== 'idle' && (
-            <button className="btn-icon" onClick={() => { setShowBrowser(!showBrowser); showBrowser ? window.surge?.browser?.hide() : window.surge?.browser?.show(); }} title="Web Browser">
+            <button className="btn-icon" onClick={toggleBrowser} title="Web Browser">
               <IconGlobe size={15} />
             </button>
           )}
@@ -444,12 +495,14 @@ const App: React.FC = () => {
           }}
           onCreateAgent={handleCreateAgent}
           creatingAgent={creatingAgent}
-          notice={agentNotice && {
-            text: agentNotice.text,
-            actionLabel: agentRetryModel && `Retry with ${agentRetryModel.name}`,
-            onAction: agentRetryModel && (() => createAgent(agentRetryModel.id)),
+          onCheckMcpWeb={checkMcpWeb}
+          notice={barNotice && {
+            text: barNotice.text,
+            tone: barNotice.tone,
+            actionLabel: barNotice.action?.label ?? (agentRetryModel && `Retry with ${agentRetryModel.name}`),
+            onAction: barNotice.action?.run ?? (agentRetryModel && (() => createAgent(agentRetryModel.id))),
           }}
-          onDismissNotice={() => setAgentNotice(null)}
+          onDismissNotice={() => setBarNotice(null)}
         />
       )}
 

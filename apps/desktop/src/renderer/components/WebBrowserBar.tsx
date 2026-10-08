@@ -17,8 +17,10 @@ interface WebBrowserBarProps {
   onBookmark?: () => void;
   onCreateAgent?: () => void;
   creatingAgent?: boolean;
-  /** A message under the bar (e.g. why "Create agent" failed), with an optional action. */
-  notice?: { text: string; actionLabel?: string; onAction?: () => void } | null;
+  /** Checks the page for MCPWeb / MCP-B; the parent reports the result through `notice`. */
+  onCheckMcpWeb?: (url: string) => Promise<void>;
+  /** A message under the bar (why "Create agent" failed, what the MCPWeb check found), with an optional action. */
+  notice?: { text: string; tone?: 'error' | 'info' | 'success'; actionLabel?: string; onAction?: () => void } | null;
   onDismissNotice?: () => void;
 }
 
@@ -36,6 +38,7 @@ const WebBrowserBar: React.FC<WebBrowserBarProps> = ({
   onBookmark,
   onCreateAgent,
   creatingAgent,
+  onCheckMcpWeb,
   notice,
   onDismissNotice,
 }) => {
@@ -63,13 +66,18 @@ const WebBrowserBar: React.FC<WebBrowserBarProps> = ({
     onNavigate(navigateUrl);
   };
 
+  // The open page, or what's typed in the bar if no page is open yet.
+  const typed = url.trim();
+  const checkTarget = currentUrl || (typed && (/^https?:\/\//i.test(typed) ? typed : `https://${typed}`));
+
   const handleDetectMcpWeb = async () => {
-    if (!url) return;
+    if (!checkTarget || !onCheckMcpWeb) return;
     setIsDetecting(true);
     try {
-      await window.surge?.mcpweb?.detect(url);
-    } catch {}
-    setIsDetecting(false);
+      await onCheckMcpWeb(checkTarget);
+    } finally {
+      setIsDetecting(false);
+    }
   };
 
   return (
@@ -116,10 +124,10 @@ const WebBrowserBar: React.FC<WebBrowserBarProps> = ({
           <button
             className="btn-icon"
             onClick={handleDetectMcpWeb}
-            title="Check for MCPWeb support"
-            disabled={isDetecting}
+            title={checkTarget ? 'Check for MCPWeb support' : 'Open a page to check it for MCPWeb support'}
+            disabled={isDetecting || !checkTarget}
           >
-            <IconPlug size={15} />
+            {isDetecting ? <div className="spinner spinner-sm" /> : <IconPlug size={15} />}
           </button>
           {onBookmark && currentUrl && (
             <button className="btn-icon" onClick={onBookmark} title="Bookmark this page">
@@ -143,7 +151,7 @@ const WebBrowserBar: React.FC<WebBrowserBarProps> = ({
         </div>
       </div>
       {notice && (
-        <div className="wbb-notice" role="alert">
+        <div className={`wbb-notice tone-${notice.tone || 'error'}`} role={notice.tone === 'info' || notice.tone === 'success' ? 'status' : 'alert'}>
           <span className="wbb-notice-text">{notice.text}</span>
           <div className="wbb-notice-actions">
             {notice.actionLabel && notice.onAction && (
