@@ -176,6 +176,10 @@ ipcMain.on('browser:hide', () => {
   layoutViews();
 });
 
+// The page's real URL. The renderer's copy can be stale: New Chat clears it but the page view keeps
+// its page, which the globe button can show again.
+ipcMain.handle('browser:getUrl', () => browserView?.webContents.getURL() || '');
+
 ipcMain.on('browser:back', () => {
   const wc: any = browserView?.webContents;
   if (!wc) return;

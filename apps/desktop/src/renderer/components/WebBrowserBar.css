@@ -105,6 +105,15 @@
   color: var(--text-primary);
 }
 
+/* Errors keep the red edge; findings are cyan (nothing found) or green (something to use). */
+.wbb-notice.tone-info {
+  border-left-color: var(--accent-cyan);
+}
+
+.wbb-notice.tone-success {
+  border-left-color: var(--accent-green);
+}
+
 .wbb-notice-text {
   flex: 1 1 220px;
   min-width: 0;

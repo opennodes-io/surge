@@ -73,6 +73,7 @@ declare global {
         hide: () => void;
         back: () => void;
         forward: () => void;
+        getUrl: () => Promise<string>;
         openExternal: (url: string) => void;
         onNavigate: (callback: (url: string) => void) => () => void;
         detectMcpB: () => Promise<McpBDetectResult>;

@@ -123,6 +123,7 @@ contextBridge.exposeInMainWorld('surge', {
     hide: () => ipcRenderer.send('browser:hide'),
     back: () => ipcRenderer.send('browser:back'),
     forward: () => ipcRenderer.send('browser:forward'),
+    getUrl: () => ipcRenderer.invoke('browser:getUrl'),
     openExternal: (url: string) => ipcRenderer.send('browser:openExternal', url),
     onNavigate: (callback: (url: string) => void) => {
       const handler = (_event: any, url: string) => callback(url);
