@@ -97,6 +97,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     profile_id TEXT,
     title TEXT,
     model TEXT,
+    page_url TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     deleted_at INTEGER,
@@ -112,6 +113,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     tool_calls TEXT,
     tool_call_id TEXT,
     name TEXT,
+    meta TEXT,
     seq INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -160,4 +162,13 @@ export const SCHEMA_STATEMENTS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_bookmarks_url ON bookmarks(url)`,
   `CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)`,
   `CREATE INDEX IF NOT EXISTS idx_onp_calls_at ON onp_calls(at)`,
+];
+
+/**
+ * Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS leaves an existing table
+ * alone, so SurgeStore.init adds any of these that an older surge.db is missing.
+ */
+export const COLUMN_ADDITIONS: ReadonlyArray<{ table: string; column: string; type: string }> = [
+  { table: 'chat_sessions', column: 'page_url', type: 'TEXT' }, // the page the chat was about
+  { table: 'chat_messages', column: 'meta', type: 'TEXT' }, // display data as JSON: tool calls, receipts
 ];

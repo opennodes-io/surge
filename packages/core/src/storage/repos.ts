@@ -118,6 +118,7 @@ function mapSession(r: Row): ChatSession {
     profileId: strOrNull(r.profile_id),
     title: strOrNull(r.title),
     model: strOrNull(r.model),
+    pageUrl: strOrNull(r.page_url),
     createdAt: num(r.created_at),
     updatedAt: num(r.updated_at),
     deletedAt: numOrNull(r.deleted_at),
@@ -135,6 +136,7 @@ function mapMessage(r: Row): ChatMessage {
     toolCalls: parseJson<unknown[] | null>(r.tool_calls, null),
     toolCallId: strOrNull(r.tool_call_id),
     name: strOrNull(r.name),
+    meta: parseJson<unknown | null>(r.meta, null),
     seq: num(r.seq),
     createdAt: num(r.created_at),
     updatedAt: num(r.updated_at),
@@ -504,14 +506,43 @@ export class AgentsRepo extends BaseRepo {
 
 // ── Chat ────────────────────────────────────────────────
 export class ChatRepo extends BaseRepo {
-  async createSession(input: { title?: string | null; model?: string | null; profileId?: string | null } = {}): Promise<ChatSession> {
+  async createSession(input: { title?: string | null; model?: string | null; pageUrl?: string | null; profileId?: string | null } = {}): Promise<ChatSession> {
     const ts = now();
     const id = newId();
     await this.client.execute({
-      sql: `INSERT INTO chat_sessions (id,profile_id,title,model,created_at,updated_at,rev,origin_device_id) VALUES (?,?,?,?,?,?,?,?)`,
-      args: [id, input.profileId ?? null, input.title ?? null, input.model ?? null, ts, ts, 1, this.deviceId],
+      sql: `INSERT INTO chat_sessions (id,profile_id,title,model,page_url,created_at,updated_at,rev,origin_device_id) VALUES (?,?,?,?,?,?,?,?,?)`,
+      args: [id, input.profileId ?? null, input.title ?? null, input.model ?? null, input.pageUrl ?? null, ts, ts, 1, this.deviceId],
     });
     return (await this.getSession(id))!;
+  }
+
+  /** Changes a session's title, model or page; only the given fields. */
+  async updateSession(id: string, patch: { title?: string | null; model?: string | null; pageUrl?: string | null }): Promise<ChatSession | null> {
+    const cols: Array<[string, unknown]> = [];
+    if (patch.title !== undefined) cols.push(['title', patch.title]);
+    if (patch.model !== undefined) cols.push(['model', patch.model]);
+    if (patch.pageUrl !== undefined) cols.push(['page_url', patch.pageUrl]);
+    if (cols.length) {
+      await this.client.execute({
+        sql: `UPDATE chat_sessions SET ${cols.map(([c]) => `${c}=?`).join(', ')}, updated_at=?, rev=rev+1 WHERE id=? AND deleted_at IS NULL`,
+        args: [...cols.map(([, v]) => v as any), now(), id],
+      });
+    }
+    return this.getSession(id);
+  }
+
+  /** Deletes a session and its messages (tombstones, so a future sync can propagate it). */
+  async deleteSession(id: string): Promise<boolean> {
+    const ts = now();
+    const rs = await this.client.execute({
+      sql: `UPDATE chat_sessions SET deleted_at=?, updated_at=?, rev=rev+1 WHERE id=? AND deleted_at IS NULL`,
+      args: [ts, ts, id],
+    });
+    await this.client.execute({
+      sql: `UPDATE chat_messages SET deleted_at=?, updated_at=?, rev=rev+1 WHERE session_id=? AND deleted_at IS NULL`,
+      args: [ts, ts, id],
+    });
+    return rs.rowsAffected > 0;
   }
 
   async getSession(id: string): Promise<ChatSession | null> {
@@ -519,21 +550,40 @@ export class ChatRepo extends BaseRepo {
     return rs.rows.length ? mapSession(rs.rows[0]) : null;
   }
 
-  async listSessions(opts: { limit?: number } = {}): Promise<ChatSession[]> {
+  /** Most recent first; `query` matches the title or any message's text. */
+  async listSessions(opts: { limit?: number; query?: string } = {}): Promise<ChatSession[]> {
+    const q = opts.query?.trim();
+    if (!q) {
+      const rs = await this.client.execute({
+        sql: `SELECT * FROM chat_sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?`,
+        args: [opts.limit ?? 50],
+      });
+      return rs.rows.map(mapSession);
+    }
+    const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
     const rs = await this.client.execute({
-      sql: `SELECT * FROM chat_sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?`,
-      args: [opts.limit ?? 50],
+      sql: `SELECT * FROM chat_sessions s WHERE s.deleted_at IS NULL AND (
+              s.title LIKE ? ESCAPE '\\' OR EXISTS (
+                SELECT 1 FROM chat_messages m WHERE m.session_id = s.id AND m.deleted_at IS NULL AND m.content LIKE ? ESCAPE '\\'))
+            ORDER BY s.updated_at DESC LIMIT ?`,
+      args: [like, like, opts.limit ?? 50],
     });
     return rs.rows.map(mapSession);
   }
 
-  async addMessage(sessionId: string, msg: { role: string; content?: string | null; toolCalls?: unknown[] | null; toolCallId?: string | null; name?: string | null; seq?: number }): Promise<ChatMessage> {
+  async addMessage(sessionId: string, msg: { role: string; content?: string | null; toolCalls?: unknown[] | null; toolCallId?: string | null; name?: string | null; meta?: unknown; seq?: number }): Promise<ChatMessage> {
     const ts = now();
     const id = newId();
+    // Without an explicit seq, append: messages written in the same millisecond keep their order.
+    let seq = msg.seq;
+    if (seq === undefined) {
+      const rs = await this.client.execute({ sql: `SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM chat_messages WHERE session_id=?`, args: [sessionId] });
+      seq = num(rs.rows[0]?.next);
+    }
     await this.client.execute({
-      sql: `INSERT INTO chat_messages (id,session_id,role,content,tool_calls,tool_call_id,name,seq,created_at,updated_at,rev,origin_device_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-      args: [id, sessionId, msg.role, msg.content ?? null, toJson(msg.toolCalls ?? null), msg.toolCallId ?? null, msg.name ?? null, msg.seq ?? 0, ts, ts, 1, this.deviceId],
+      sql: `INSERT INTO chat_messages (id,session_id,role,content,tool_calls,tool_call_id,name,meta,seq,created_at,updated_at,rev,origin_device_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args: [id, sessionId, msg.role, msg.content ?? null, toJson(msg.toolCalls ?? null), msg.toolCallId ?? null, msg.name ?? null, toJson(msg.meta ?? null), seq, ts, ts, 1, this.deviceId],
     });
     await this.client.execute({ sql: `UPDATE chat_sessions SET updated_at=?, rev=rev+1 WHERE id=?`, args: [ts, sessionId] });
     const rs = await this.client.execute({ sql: `SELECT * FROM chat_messages WHERE id=?`, args: [id] });

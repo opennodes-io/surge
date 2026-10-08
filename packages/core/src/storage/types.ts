@@ -100,6 +100,8 @@ export interface ChatSession extends SyncMeta {
   profileId: string | null;
   title: string | null;
   model: string | null;
+  /** The page the chat was about, reopened with it. */
+  pageUrl: string | null;
 }
 
 export interface ChatMessage extends SyncMeta {
@@ -110,6 +112,8 @@ export interface ChatMessage extends SyncMeta {
   toolCalls: unknown[] | null;
   toolCallId: string | null;
   name: string | null;
+  /** Display data the client keeps with a message (e.g. its tool calls and receipts). */
+  meta: unknown | null;
   seq: number;
 }
 

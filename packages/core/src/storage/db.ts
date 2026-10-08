@@ -1,5 +1,5 @@
 import { createClient, type Client } from '@libsql/client';
-import { SCHEMA_STATEMENTS } from './schema.js';
+import { SCHEMA_STATEMENTS, COLUMN_ADDITIONS } from './schema.js';
 import {
   BookmarksRepo,
   CollectionsRepo,
@@ -70,6 +70,13 @@ export class SurgeStore {
   private async init(): Promise<void> {
     for (const stmt of SCHEMA_STATEMENTS) {
       await this.client.execute(stmt);
+    }
+    // Databases created before a column existed get it added (nullable, so old rows stay valid).
+    for (const { table, column, type } of COLUMN_ADDITIONS) {
+      const info = await this.client.execute(`PRAGMA table_info(${table})`);
+      if (!info.rows.some((r) => String(r.name) === column)) {
+        await this.client.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      }
     }
   }
 
