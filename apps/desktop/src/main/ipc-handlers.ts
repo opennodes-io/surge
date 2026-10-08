@@ -102,7 +102,13 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   ipcMain.handle('ai:streamChat', async (event, messages: any[], model: string) => {
     const sender = event.sender;
     try {
-      const toolDefs = mcpManager.getToolDefinitions();
+      // Page tools need a page. Without one, the browser server offers only navigateTo, so the turn
+      // doesn't carry ~20 schemas it can't use. Re-read every round: after navigateTo opens a page,
+      // the rest of the turn gets the page tools.
+      const toolDefs = () => {
+        const pageOpen = browserService.hasPage();
+        return mcpManager.getToolDefinitions((serverId, toolName) => pageOpen || serverId !== 'browser' || toolName === 'navigateTo');
+      };
       const mcpSystemPrompt = mcpManager.getSystemPrompt();
       const browserContext = await browserService.getContextPrompt();
 

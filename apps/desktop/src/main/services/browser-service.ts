@@ -333,6 +333,12 @@ export class BrowserService {
     ];
   }
 
+  /** Whether a web page is loaded in the embedded browser (its page tools have something to act on). */
+  hasPage(): boolean {
+    const url = this.wc?.getURL() || '';
+    return /^https?:/i.test(url);
+  }
+
   // ── System Prompt Section ──────────────────────────────
   async getContextPrompt(): Promise<string> {
     const wc = this.wc;
