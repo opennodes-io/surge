@@ -68,6 +68,15 @@ declare global {
       search: {
         web: (query: string) => Promise<{ results: SearchResult[]; error?: string }>;
       };
+      hub: {
+        status: () => Promise<HubStatus>;
+        configure: (cfg: { enabled?: boolean; port?: number; allowActions?: boolean }) => Promise<HubStatus>;
+        token: () => Promise<string>;
+        regenerateToken: () => Promise<string>;
+      };
+      clipboard: {
+        writeText: (text: string) => Promise<boolean>;
+      };
       chats: {
         list: (opts?: { limit?: number; query?: string }) => Promise<ChatSessionSummary[]>;
         get: (id: string) => Promise<{ session: ChatSessionSummary; messages: StoredChatMessage[] } | null>;
@@ -166,6 +175,18 @@ export interface PrivateStatus {
   peers: string[];
   mdns: boolean;
   discoveredPeers: Array<{ name: string; kind: string; origin: string }>;
+  error?: string;
+}
+
+/** The Surge hub (local MCP server for other AI apps). */
+export interface HubStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  url: string | null;
+  allowActions: boolean;
+  tools: string[];
+  tokenPersisted: boolean;
   error?: string;
 }
 

@@ -171,6 +171,49 @@
   box-shadow: 0 0 12px rgba(6, 182, 212, 0.15);
 }
 
+/* Surge hub: address/token rows and copyable setup snippets. */
+.hub-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.hub-value {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hub-snippet {
+  margin-top: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.hub-snippet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.hub-code {
+  margin: 0;
+  padding: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Can't be used yet (no key, no endpoint, Ollama down): dimmed, with what to do about it. */
 .model-card.needs-setup {
   cursor: default;

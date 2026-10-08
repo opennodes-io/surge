@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { IconX, IconSliders, IconBot, IconWrench, IconKey, IconCpu, IconNetwork, IconFile } from './Icons';
-import type { AiModel, ModelLevel, PrivateStatus } from '../types';
+import { IconX, IconSliders, IconBot, IconWrench, IconKey, IconCpu, IconNetwork, IconFile, IconPlug } from './Icons';
+import type { AiModel, ModelLevel, PrivateStatus, HubStatus } from '../types';
 import SpendDashboard from './SpendDashboard';
 import './SettingsPanel.css';
 
@@ -70,6 +70,12 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
   // Private mode (embedded ollama-router): status, LAN peers, opt-in mDNS discovery
   const [privateStatus, setPrivateStatus] = useState<PrivateStatus | null>(null);
   const [newPeer, setNewPeer] = useState('');
+  // Surge hub (local MCP server for other AI apps)
+  const [hub, setHub] = useState<HubStatus | null>(null);
+  const [hubToken, setHubToken] = useState('');
+  const [hubTokenShown, setHubTokenShown] = useState(false);
+  const [hubPort, setHubPort] = useState('');
+  const [copied, setCopied] = useState('');
 
   useEffect(() => {
     const load = async () => {
@@ -79,6 +85,10 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
       setKeysEncrypted(secrets.encrypted);
       setOnpKeys(await window.surge.onpKeys.list());
       setPrivateStatus(await window.surge.private.status());
+      const hubStatus = await window.surge.hub.status();
+      setHub(hubStatus);
+      setHubPort(String(hubStatus.port));
+      if (hubStatus.enabled) setHubToken(await window.surge.hub.token());
       setOllamaHost(await s.get('ai.ollamaHost') || 'http://localhost:11434');
       setVllmEndpoint(await s.get('ai.vllmEndpoint') || '');
       setVllmModel(await s.get('ai.vllmModel') || '');
@@ -192,6 +202,39 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
     { id: 'models' as const, icon: <IconKey size={14} />, label: 'API Keys' },
     { id: 'advanced' as const, icon: <IconWrench size={14} />, label: 'Advanced' },
     { id: 'spend' as const, icon: <IconFile size={14} />, label: 'Spend' },
+  ];
+
+  const configureHub = async (cfg: { enabled?: boolean; port?: number; allowActions?: boolean }) => {
+    const status = await window.surge.hub.configure(cfg);
+    setHub(status);
+    setHubPort(String(status.port));
+    if (status.enabled && !hubToken) setHubToken(await window.surge.hub.token());
+  };
+
+  const copy = async (what: string, text: string) => {
+    await window.surge.clipboard.writeText(text);
+    setCopied(what);
+    setTimeout(() => setCopied(c => (c === what ? '' : c)), 1500);
+  };
+
+  const hubUrl = hub?.url ?? `http://127.0.0.1:${hub?.port ?? 4766}/mcp`;
+  // Ready-to-paste setups; copying always uses the real token, the preview masks it until "Show".
+  const hubSnippets: Array<{ id: string; label: string; text: (token: string) => string }> = [
+    {
+      id: 'mcpjson',
+      label: 'Cursor, LM Studio, VS Code (mcp.json)',
+      text: (token) => JSON.stringify({ mcpServers: { surge: { url: hubUrl, headers: { Authorization: `Bearer ${token}` } } } }, null, 2),
+    },
+    {
+      id: 'claudecode',
+      label: 'Claude Code',
+      text: (token) => `claude mcp add --transport http surge ${hubUrl} --header "Authorization: Bearer ${token}"`,
+    },
+    {
+      id: 'claudedesktop',
+      label: 'Claude Desktop (claude_desktop_config.json, via mcp-remote)',
+      text: (token) => JSON.stringify({ mcpServers: { surge: { command: 'npx', args: ['-y', 'mcp-remote', hubUrl, '--header', 'Authorization:${SURGE_AUTH}'], env: { SURGE_AUTH: `Bearer ${token}` } } } }, null, 2),
+    },
   ];
 
   return (
@@ -456,6 +499,66 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
               </label>
               {(privateStatus?.discoveredPeers.length ?? 0) > 0 && (
                 <span className="settings-hint">Reachable: {privateStatus!.discoveredPeers.map(p => `${p.name} (${p.kind})`).join(', ')}</span>
+              )}
+            </div>
+
+            <h3 style={{marginTop: '24px'}}>
+              <IconPlug size={16} /> Surge hub
+              {hub?.running && <span className="badge badge-green" style={{marginLeft: 8, fontSize: '0.6rem'}}>Running</span>}
+            </h3>
+            <div className="api-key-group">
+              <span className="settings-hint">
+                Lets other AI apps on this computer (Claude Code, Cursor, LM Studio, …) use Surge's browser and your bookmarks,
+                through a local MCP server. Only this computer can reach it, and each app needs the token below.
+              </span>
+              <label style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px', fontSize: 'var(--text-sm)' }}>
+                <input type="checkbox" checked={!!hub?.enabled} onChange={e => configureHub({ enabled: e.target.checked })} />
+                Run the Surge hub
+              </label>
+              {hub?.error && <span className="settings-hint" style={{ color: 'var(--accent-red)' }}>{hub.error}</span>}
+              {hub?.enabled && (
+                <>
+                  <label style={{ marginTop: '8px' }}>Address</label>
+                  <div className="hub-row">
+                    <code className="hub-value">{hubUrl}</code>
+                    <button className="btn-ghost btn-sm" onClick={() => copy('url', hubUrl)}>{copied === 'url' ? 'Copied' : 'Copy'}</button>
+                  </div>
+                  <label style={{ marginTop: '8px' }}>Token</label>
+                  <div className="hub-row">
+                    <code className="hub-value">{hubTokenShown ? hubToken : '•'.repeat(24)}</code>
+                    <button className="btn-ghost btn-sm" onClick={() => setHubTokenShown(!hubTokenShown)}>{hubTokenShown ? 'Hide' : 'Show'}</button>
+                    <button className="btn-ghost btn-sm" onClick={() => copy('token', hubToken)}>{copied === 'token' ? 'Copied' : 'Copy'}</button>
+                    <button className="btn-ghost btn-sm" title="Apps using the old token stop working" onClick={async () => setHubToken(await window.surge.hub.regenerateToken())}>New token</button>
+                  </div>
+                  {!hub.tokenPersisted && (
+                    <span className="settings-hint">There's no OS keychain here, so the token changes each time Surge starts.</span>
+                  )}
+                  <label style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px', fontSize: 'var(--text-sm)' }}>
+                    <input type="checkbox" checked={hub.allowActions} onChange={e => configureHub({ allowActions: e.target.checked })} />
+                    Let connected apps act in the browser (open pages, click, type, run scripts) and save bookmarks
+                  </label>
+                  <span className="settings-hint">
+                    {hub.allowActions
+                      ? `${hub.tools.length} tools: reading and acting in the browser you're signed in to. Turn this off when you don't need it.`
+                      : `${hub.tools.length} read-only tools: the open page, your bookmarks and history.`}
+                  </span>
+                  <label style={{ marginTop: '8px' }}>Port</label>
+                  <div className="hub-row">
+                    <input className="input" value={hubPort} onChange={e => setHubPort(e.target.value)} style={{ width: '110px' }} />
+                    <button className="btn-ghost btn-sm" disabled={hubPort === String(hub.port) || !/^\d{4,5}$/.test(hubPort)}
+                      onClick={() => configureHub({ port: Number(hubPort) })}>Apply</button>
+                  </div>
+                  <label style={{ marginTop: '12px' }}>Connect an app</label>
+                  {hubSnippets.map(sn => (
+                    <div key={sn.id} className="hub-snippet">
+                      <div className="hub-snippet-head">
+                        <span>{sn.label}</span>
+                        <button className="btn-ghost btn-sm" onClick={() => copy(sn.id, sn.text(hubToken))}>{copied === sn.id ? 'Copied' : 'Copy'}</button>
+                      </div>
+                      <pre className="hub-code">{sn.text(hubTokenShown ? hubToken : '<token>')}</pre>
+                    </div>
+                  ))}
+                </>
               )}
             </div>
 

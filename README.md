@@ -31,6 +31,7 @@
 **Also**
 - Gemini, Groq, Claude, Mistral, Ollama, and any OpenAI-compatible endpoint (vLLM, LM Studio, LocalAI, …).
 - API keys kept in the OS keychain (Electron `safeStorage`); imported catalogs get one key per host, sent only to that host.
+- **Surge hub:** other AI apps on your computer (Claude Code, Cursor, LM Studio, …) can use Surge's browser and your bookmarks through a local MCP server, protected by a token. It's off by default and read-only unless you allow actions (Settings → Advanced → Surge hub).
 
 ## Install (Windows)
 
