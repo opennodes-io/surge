@@ -1,4 +1,4 @@
-import { app, ipcMain, shell, type WebContentsView } from 'electron';
+import { app, ipcMain, shell, type WebContentsView, clipboard } from 'electron';
 import {
   AiService,
   McpManager,
@@ -16,6 +16,7 @@ import { startPrivateRouter, stopPrivateRouter, privateRouterStatus } from './se
 import { BrowserService } from './services/browser-service';
 import { registerLocalDataHandlers } from './services/local-data';
 import { registerAgentHandlers } from './services/agents';
+import { registerHubHandlers } from './services/surge-hub';
 import { ElectronBrowserPort } from './services/electron-browser-port';
 
 let aiService: AiService;
@@ -64,6 +65,12 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   // ── Agentic per-site agents (generate → approve → persist → virtual server) ──
   const browserPort = new ElectronBrowserPort(getBrowserView);
   registerAgentHandlers(mcpManager, aiService, browserService, browserPort, settingsService);
+
+  // ── Surge hub: a local MCP server other AI apps can use (off by default) ──
+  registerHubHandlers(mcpManager, settingsService, secretStore);
+
+  // Copy text for the renderer (its sandbox has no reliable clipboard access).
+  ipcMain.handle('clipboard:writeText', (_e, text: string) => { clipboard.writeText(String(text ?? '')); return true; });
 
   // What the chat's tool-call block shows: the server and the bare tool name from "server__tool".
   const toolLabels = (namespaced: string) => {

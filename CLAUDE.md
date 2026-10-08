@@ -169,6 +169,11 @@ Verification scripts for the ONP integration:
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Private mode with tools.* Local models without tool support fail through the router: Surge's prompt-based tool fallback only triggers for `vllm-custom` / `ollama-local`.
   - *Heavy prompts.* The chat sends all 27 browser + bookmarks tool definitions every turn (~3.2k prompt tokens), which is slow on small CPU nodes and inflates paid ceilings.
+- **Surge hub** (`apps/desktop/src/main/services/surge-hub.ts`): a local MCP server at `http://127.0.0.1:<hub.port, 4766>/mcp` exposing the `browser` and `bookmarks` virtual servers to other AI apps.
+  - Off by default (`hub.enabled`). It needs a bearer token (`hub.token` in the keychain), uses the SDK's DNS-rebinding protection (`allowedHosts`), and is stateless: a server and transport per POST.
+  - Read-only unless `hub.allowActions`: 14 read tools, 27 with actions. Refused calls say how to allow them.
+  - Settings → Advanced → Surge hub shows the URL and token, with copyable setup for mcp.json (Cursor / LM Studio / VS Code), Claude Code, and Claude Desktop via `mcp-remote`.
+  - Verified with the SDK's Streamable HTTP client: 401 without or with a wrong token, 403 for a spoofed Host, actions refused until allowed.
 - **Window layout** (`apps/desktop/src/main/main.ts`): `layoutViews()` is the only code that sizes the two views. With the page attached, the app UI gets a 400px column (half the window if narrower) and the page the rest; otherwise the app UI fills the window.
   - Every window or attach change calls it: `window:resize`, `resize`, maximize, `browser:show` and `browser:hide`.
   - Before, `window:resize` (sent on every mode change) stretched the app UI full-width under the still-attached page, which left Settings half covered.

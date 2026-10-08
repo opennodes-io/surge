@@ -158,6 +158,18 @@ contextBridge.exposeInMainWorld('surge', {
     configure: (cfg: { peers?: string[]; mdns?: boolean }) => ipcRenderer.invoke('private:configure', cfg),
   },
 
+  // Surge hub: local MCP server for other AI apps
+  hub: {
+    status: () => ipcRenderer.invoke('hub:status'),
+    configure: (cfg: { enabled?: boolean; port?: number; allowActions?: boolean }) => ipcRenderer.invoke('hub:configure', cfg),
+    token: () => ipcRenderer.invoke('hub:token'),
+    regenerateToken: () => ipcRenderer.invoke('hub:regenerateToken'),
+  },
+
+  clipboard: {
+    writeText: (text: string) => ipcRenderer.invoke('clipboard:writeText', text),
+  },
+
   // OpenNodes spend ledger (persisted settled calls)
   onp: {
     spend: () => ipcRenderer.invoke('onp:spend'),
