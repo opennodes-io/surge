@@ -154,6 +154,20 @@ export class BrowserService {
       {
         type: 'function',
         function: {
+          name: 'browser__collectFeed',
+          description: '[Browser] Collect the posts of a social feed or timeline on the current page (Instagram, TikTok, X, Facebook, YouTube, LinkedIn, Reddit, …). Scrolls a few times to load more, then returns each post\'s text and link. Read-only: never likes, posts or opens anything.',
+          parameters: {
+            type: 'object',
+            properties: {
+              scrolls: { type: 'number', description: 'How many screens to scroll to load more posts (default 4, max 8)' },
+              maxItems: { type: 'number', description: 'Maximum posts to return (default 30, max 60)' },
+            },
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
           name: 'browser__scrollPage',
           description: '[Browser] Scroll the page up, down, to top/bottom, or to a specific element.',
           parameters: {
@@ -385,7 +399,11 @@ export class BrowserService {
       return 'Error: No page is open in the browser. Use browser__navigateTo first, or answer without the page.';
     }
     // Every tool answers within its own wait plus a margin, so a stuck page can't stall the tool loop.
-    const limitMs = Math.max(15_000, Number(args.timeoutMs ?? 0) + 5_000);
+    // collectFeed's wait is its own bound: up to 8s for the first post, then ~1.2s per scroll.
+    const ownWaitMs = toolName === 'collectFeed'
+      ? 8_000 + Math.min(8, Math.max(0, Math.trunc(Number(args.scrolls ?? 4)))) * 1_500
+      : Number(args.timeoutMs ?? 0);
+    const limitMs = Math.max(15_000, ownWaitMs + 5_000);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<string>((resolve) => {
       timer = setTimeout(() => resolve(`Error: browser__${toolName} did not finish within ${limitMs / 1000}s.`), limitMs);
@@ -405,6 +423,7 @@ export class BrowserService {
       case 'getFormFields': return this.getFormFields();
       case 'evaluateScript': return this.evaluateScript(args.script);
       case 'scrollPage': return this.scrollPage(args.direction, args.pixels, args.selector);
+      case 'collectFeed': return this.collectFeed(args.scrolls ?? 4, args.maxItems ?? 30);
       case 'getSelectedText': return this.getSelectedText();
       // Playwright-like
       case 'waitForSelector': return this.waitForSelector(args.selector, args.timeoutMs ?? 5000);
@@ -539,6 +558,50 @@ export class BrowserService {
             .map(a => ({ text: a.textContent.trim().slice(0, 80), href: a.href }))
             .filter(l => l.text && l.href && !l.href.startsWith('javascript:'))
             ${filterExpr}.slice(0, ${maxResults}));
+        })()
+      `);
+    } catch (err: any) { return `Error: ${err.message}`; }
+  }
+
+  /**
+   * Feed posts across the big social sites: the outermost post element of each (article / role=article
+   * and the sites' own feed item tags), deduplicated, a bounded number of screens deep. Bounded on
+   * purpose (≤ 8 scrolls, ≤ 60 posts): it reads what the user asked about, it isn't a crawler.
+   */
+  private async collectFeed(scrolls: number, maxItems: number): Promise<string> {
+    const wc = this.wc;
+    if (!wc) return 'No page loaded.';
+    const s = Math.max(0, Math.min(8, Math.trunc(scrolls)));
+    const n = Math.max(1, Math.min(60, Math.trunc(maxItems)));
+    try {
+      return await wc.executeJavaScript(`
+        (async function() {
+          const SEL = ['article', '[role="article"]', '[data-testid="tweet"]', 'ytd-rich-item-renderer', 'ytd-video-renderer',
+            'shreddit-post', 'div.feed-shared-update-v2', '[data-e2e="recommend-list-item-container"]'].join(',');
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          // Feeds render after load: wait up to 8s for the first post.
+          for (let t = 0; t < 16 && !document.querySelector(SEL); t++) await sleep(500);
+          const seen = new Map();
+          const collect = () => {
+            for (const el of document.querySelectorAll(SEL)) {
+              if (el.parentElement && el.parentElement.closest(SEL)) continue; // outermost post only
+              const text = (el.innerText || '').replace(/[ \\t]+\\n/g, '\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+              if (text.length < 20) continue;
+              const key = text.slice(0, 200);
+              if (seen.has(key)) continue;
+              const permalink = el.querySelector('a[href*="/status/"], a[href*="/p/"], a[href*="/reel/"], a[href*="/video/"], a[href*="/posts/"], a[href*="/comments/"], a[href*="watch?v="], a[href*="/feed/update/"]');
+              seen.set(key, { text: text.slice(0, 700), link: (permalink || el.querySelector('a[href]'))?.href || null });
+              if (seen.size >= ${n}) return true;
+            }
+            return false;
+          };
+          for (let i = 0; i <= ${s}; i++) {
+            if (collect() || i === ${s}) break;
+            window.scrollBy(0, Math.round(window.innerHeight * 0.9));
+            await sleep(1200);
+          }
+          if (!seen.size) return JSON.stringify({ url: location.href, count: 0, note: 'No feed posts recognized on this page (maybe a sign-in wall). Try browser__getPageContent.' });
+          return JSON.stringify({ url: location.href, count: seen.size, items: [...seen.values()] });
         })()
       `);
     } catch (err: any) { return `Error: ${err.message}`; }

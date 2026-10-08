@@ -165,6 +165,12 @@ contextBridge.exposeInMainWorld('surge', {
     configure: (cfg: { peers?: string[]; mdns?: boolean }) => ipcRenderer.invoke('private:configure', cfg),
   },
 
+  // Social channels (TikTok, Instagram, …) read in the embedded browser
+  channels: {
+    list: () => ipcRenderer.invoke('channels:list'),
+    forget: (id: string) => ipcRenderer.invoke('channels:forget', id),
+  },
+
   // Surge hub: local MCP server for other AI apps
   hub: {
     status: () => ipcRenderer.invoke('hub:status'),

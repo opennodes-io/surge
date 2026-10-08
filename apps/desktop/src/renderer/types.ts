@@ -71,6 +71,10 @@ declare global {
       search: {
         web: (query: string) => Promise<{ results: SearchResult[]; error?: string }>;
       };
+      channels: {
+        list: () => Promise<SocialChannel[]>;
+        forget: (id: string) => Promise<{ cleared: number }>;
+      };
       hub: {
         status: () => Promise<HubStatus>;
         configure: (cfg: { enabled?: boolean; port?: number; allowActions?: boolean }) => Promise<HubStatus>;
@@ -179,6 +183,15 @@ export interface PrivateStatus {
   mdns: boolean;
   discoveredPeers: Array<{ name: string; kind: string; origin: string }>;
   error?: string;
+}
+
+/** A social network read in Surge's browser with the user's own sign-in. */
+export interface SocialChannel {
+  id: string;
+  name: string;
+  home: string;
+  domain: string;
+  signedIn: boolean;
 }
 
 /** The Surge hub (local MCP server for other AI apps). */

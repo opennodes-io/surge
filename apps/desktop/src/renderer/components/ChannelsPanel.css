@@ -1,0 +1,71 @@
+/* ── Channels (reuses the history sidebar frame: .history-panel-overlay / .hp-*) ── */
+
+.ch-intro {
+  margin: var(--space-sm) var(--space-md) var(--space-xs);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.ch-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-sm);
+  border-radius: var(--radius-sm);
+}
+
+.ch-item:hover,
+.ch-item:focus-within {
+  background: var(--bg-glass-hover);
+}
+
+.ch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+/* A plain letter mark, not the networks' logos (trademarks). */
+.ch-avatar {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+}
+
+.ch-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ch-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ch-status {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.ch-status.on {
+  color: var(--accent-green);
+}
+
+.ch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-left: 36px;
+}

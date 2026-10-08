@@ -137,6 +137,7 @@ const TOOL_LABELS: Record<string, string> = {
   waitForNavigation: 'Waited for the page to load',
   pressKey: 'Pressed a key',
   detectMcpBTools: "Checked the page's MCP-B tools",
+  collectFeed: 'Read the feed',
   callMcpBTool: 'Used a page tool',
   // Bookmarks & history
   bookmark_add: 'Saved a bookmark',
@@ -174,6 +175,13 @@ function describeCall(data: ToolCallData): { label: string; detail?: string } {
     case 'scrollPage': return { label, detail: args.direction || args.selector };
     case 'callMcpBTool': return { label, detail: args.toolName };
     case 'bookmark_search': case 'history_search': return { label, detail: args.query };
+    case 'collectFeed': {
+      if (data.status !== 'success') return { label };
+      try {
+        const count = JSON.parse(extractText(data.result)).count;
+        return { label, detail: typeof count === 'number' ? `${count} post${count === 1 ? '' : 's'}` : undefined };
+      } catch { return { label }; }
+    }
     default: return { label };
   }
 }

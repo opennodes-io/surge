@@ -25,7 +25,7 @@ const EXPOSED_SERVERS = ['browser', 'bookmarks'];
 const READ_ONLY_TOOLS = new Set([
   'browser__getPageContent', 'browser__getPageMetadata', 'browser__getLinks', 'browser__getFormFields',
   'browser__getSelectedText', 'browser__getElementText', 'browser__getElementAttribute', 'browser__getTableData',
-  'browser__waitForSelector', 'browser__detectMcpBTools',
+  'browser__waitForSelector', 'browser__detectMcpBTools', 'browser__collectFeed',
   'bookmarks__bookmark_list', 'bookmarks__bookmark_search', 'bookmarks__history_search', 'bookmarks__history_list',
 ]);
 const TOKEN_SECRET = 'hub.token';
