@@ -60,6 +60,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, streamContent, isStream
               {msg.role === 'user' ? <IconUser size={16} /> : <IconBot size={16} />}
             </div>
             <div className="message-content">
+              {msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0 && (
+                <div className="tool-calls-section">
+                  {msg.toolCalls.map((tc) => <McpToolCallBlock key={tc.id} data={tc} />)}
+                </div>
+              )}
               {msg.role === 'assistant' ? (
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {msg.content}

@@ -1,3 +1,4 @@
+import type { ToolCallData } from './components/McpToolCallBlock';
 // Type declarations for the Surge preload bridge
 
 declare global {
@@ -67,6 +68,14 @@ declare global {
       search: {
         web: (query: string) => Promise<{ results: SearchResult[]; error?: string }>;
       };
+      chats: {
+        list: (opts?: { limit?: number; query?: string }) => Promise<ChatSessionSummary[]>;
+        get: (id: string) => Promise<{ session: ChatSessionSummary; messages: StoredChatMessage[] } | null>;
+        create: (input: { title?: string; model?: string; pageUrl?: string | null }) => Promise<ChatSessionSummary>;
+        addMessage: (sessionId: string, msg: { role: string; content?: string; meta?: unknown }) => Promise<StoredChatMessage>;
+        update: (id: string, patch: { title?: string; model?: string; pageUrl?: string | null }) => Promise<ChatSessionSummary | null>;
+        remove: (id: string) => Promise<{ deleted: boolean }>;
+      };
       browser: {
         navigate: (url: string) => void;
         show: () => void;
@@ -106,6 +115,26 @@ export interface ChatMessage {
   tool_call_id?: string;
   name?: string;
   onpCalls?: OnpCall[];        // OpenNodes calls behind this reply (one per model round)
+  toolCalls?: ToolCallData[];  // tool calls the reply made, shown above its text
+}
+
+/** A saved conversation (chat history). */
+export interface ChatSessionSummary {
+  id: string;
+  title: string | null;
+  model: string | null;
+  pageUrl: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface StoredChatMessage {
+  id: string;
+  role: string;
+  content: string | null;
+  meta: { toolCalls?: ToolCallData[]; onpCalls?: OnpCall[]; model?: string } | null;
+  seq: number;
+  createdAt: number;
 }
 
 // Mirrors @surge/core's OnpCallRecord: one settled OpenNodes call

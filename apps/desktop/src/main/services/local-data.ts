@@ -42,6 +42,18 @@ export function registerLocalDataHandlers(mcpManager: McpManager, settings: Sett
     return { cleared: await (await storePromise).history.clear({ kind: opts?.kind, olderThan }) };
   });
 
+  // ── Chat history ──
+  ipcMain.handle('chats:list', async (_e, opts) => (await storePromise).chat.listSessions(opts || {}));
+  ipcMain.handle('chats:get', async (_e, id: string) => {
+    const store = await storePromise;
+    const session = await store.chat.getSession(id);
+    return session ? { session, messages: await store.chat.getMessages(id) } : null;
+  });
+  ipcMain.handle('chats:create', async (_e, input) => (await storePromise).chat.createSession(input || {}));
+  ipcMain.handle('chats:addMessage', async (_e, sessionId: string, msg) => (await storePromise).chat.addMessage(sessionId, msg));
+  ipcMain.handle('chats:update', async (_e, id: string, patch) => (await storePromise).chat.updateSession(id, patch || {}));
+  ipcMain.handle('chats:delete', async (_e, id: string) => ({ deleted: await (await storePromise).chat.deleteSession(id) }));
+
   // ── Discovery (MCP_Index) ──
   ipcMain.handle('discovery:list', async (_e, params) => {
     refreshDiscovery();

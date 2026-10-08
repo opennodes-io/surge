@@ -6,11 +6,31 @@ import SettingsPanel from './components/SettingsPanel';
 import WebBrowserBar from './components/WebBrowserBar';
 import McpWebPanel from './components/McpWebPanel';
 import AgentApprovalModal from './components/AgentApprovalModal';
-import { IconNewChat, IconBolt, IconGlobe, IconSettings, IconMinus, IconX, IconMaximize, IconRestore } from './components/Icons';
+import HistoryPanel from './components/HistoryPanel';
+import { IconNewChat, IconHistory, IconBolt, IconGlobe, IconSettings, IconMinus, IconX, IconMaximize, IconRestore } from './components/Icons';
 import { PRIVATE_AUTO_MODEL, ONP_AUTO_MODEL } from './types';
 import type { AppMode, ChatMessage, AiModel, OnpCall, McpWebCapabilities, McpWebConnectResult, McpBDetectResult, WebAgentSpec } from './types';
 import type { ToolCallData } from './components/McpToolCallBlock';
 import './styles/app.css';
+
+// History titles: the first message, on one line.
+const chatTitle = (text: string) => text.replace(/\s+/g, ' ').trim().slice(0, 80);
+
+// Tool results can be big (a page's text, base64 images). History keeps enough to show what
+// happened: text trimmed, images and audio dropped.
+const HISTORY_TEXT_LIMIT = 2000;
+function forHistory(tc: ToolCallData): ToolCallData {
+  const cap = (s: string) => (s.length > HISTORY_TEXT_LIMIT ? `${s.slice(0, HISTORY_TEXT_LIMIT)}… [trimmed in history]` : s);
+  const result = typeof tc.result === 'string'
+    ? cap(tc.result)
+    : Array.isArray(tc.result)
+      ? tc.result.map((c: any) =>
+          c?.type === 'text' ? { ...c, text: cap(String(c.text ?? '')) }
+            : c?.type === 'image' || c?.type === 'audio' ? { type: c.type, mimeType: c.mimeType, omitted: true }
+              : c)
+      : tc.result;
+  return { ...tc, result };
+}
 
 const App: React.FC = () => {
   const [mode, setMode] = useState<AppMode>('idle');
@@ -19,6 +39,14 @@ const App: React.FC = () => {
   const [streamContent, setStreamContent] = useState('');
   const [selectedModel, setSelectedModel] = useState('gemini-flash-lite');
   const [models, setModels] = useState<AiModel[]>([]);
+  // Chat history: the saved session this conversation belongs to (created by its first message).
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const setSession = useCallback((id: string | null) => { sessionIdRef.current = id; setSessionId(id); }, []);
+  const [showHistory, setShowHistory] = useState(false);
+  // The current turn's tool calls, read when the turn ends (state would be stale in that closure).
+  const liveToolCalls = useRef<ToolCallData[]>([]);
+  const browserUrlRef = useRef('');
   // Set once the startup model has been chosen, so the default isn't saved over the user's last pick.
   const modelsReady = useRef(false);
   // Private mode: only local/LAN models answer; the model in use before it was turned on comes back after
@@ -88,15 +116,10 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const unsub = window.surge?.mcp?.onToolCall?.((data: any) => {
-      setToolCalls(prev => {
-        const existing = prev.findIndex(t => t.id === data.id);
-        if (existing >= 0) {
-          const updated = [...prev];
-          updated[existing] = { ...updated[existing], ...data };
-          return updated;
-        }
-        return [...prev, data];
-      });
+      const list = liveToolCalls.current;
+      const i = list.findIndex(t => t.id === data.id);
+      liveToolCalls.current = i >= 0 ? list.map((t, j) => (j === i ? { ...t, ...data } : t)) : [...list, data];
+      setToolCalls(liveToolCalls.current);
     });
     return unsub;
   }, []);
@@ -226,6 +249,43 @@ const App: React.FC = () => {
     setIsStreaming(true);
     setStreamContent('');
     setToolCalls([]);
+    liveToolCalls.current = [];
+
+    // History: the chat's first message creates its session; every message is saved as it lands.
+    const sessionReady: Promise<string | null> = (async () => {
+      let sid = sessionIdRef.current;
+      if (!sid) {
+        const session = await window.surge.chats.create({ title: chatTitle(query), model: selectedModel, pageUrl: browserUrlRef.current || null });
+        sid = session.id;
+        setSession(sid);
+      }
+      await window.surge.chats.addMessage(sid, { role: 'user', content: query });
+      return sid;
+    })().catch(() => null);
+
+    // A finished reply: tool calls move from the live list onto the message, and it's saved.
+    const finishReply = (content: string) => {
+      const turnTools = liveToolCalls.current;
+      liveToolCalls.current = [];
+      setToolCalls([]);
+      if (!content && !onpCalls.length && !turnTools.length) return;
+      const reply: ChatMessage = {
+        role: 'assistant',
+        content,
+        onpCalls: onpCalls.length ? onpCalls : undefined,
+        toolCalls: turnTools.length ? turnTools : undefined,
+      };
+      setMessages(msgs => [...msgs, reply]);
+      sessionReady.then((sid) => {
+        if (!sid) return;
+        window.surge.chats.addMessage(sid, {
+          role: 'assistant',
+          content,
+          meta: { toolCalls: reply.toolCalls?.map(forHistory), onpCalls: reply.onpCalls, model: selectedModel },
+        }).catch(() => {});
+        window.surge.chats.update(sid, { model: selectedModel, pageUrl: browserUrlRef.current || null }).catch(() => {});
+      });
+    };
 
     // Register listeners BEFORE starting the stream
     // Use a flag to ensure onEnd only processes once (prevents duplication from multi-round tool calls)
@@ -251,9 +311,7 @@ const App: React.FC = () => {
       if (finished) return; // Prevent duplicate processing
       finished = true;
       cleanup();
-      if (accumulatedContent || onpCalls.length) {
-        setMessages(msgs => [...msgs, { role: 'assistant', content: accumulatedContent, onpCalls: onpCalls.length ? onpCalls : undefined }]);
-      }
+      finishReply(accumulatedContent);
       window.surge?.history?.record({ kind: 'chat', title: query.slice(0, 80) }).catch(() => {});
       setStreamContent('');
       setIsStreaming(false);
@@ -263,7 +321,7 @@ const App: React.FC = () => {
       if (finished) return;
       finished = true;
       cleanup();
-      setMessages(msgs => [...msgs, { role: 'assistant', content: `Error: ${error}`, onpCalls: onpCalls.length ? onpCalls : undefined }]);
+      finishReply(`Error: ${error}`);
       setStreamContent('');
       setIsStreaming(false);
     });
@@ -274,12 +332,12 @@ const App: React.FC = () => {
       if (!finished) {
         finished = true;
         cleanup();
-        setMessages(prev => [...prev, { role: 'assistant', content: `${err.message || 'Failed to connect'}` }]);
+        finishReply(`${err.message || 'Failed to connect'}`);
         setIsStreaming(false);
         setStreamContent('');
       }
     }
-  }, [messages, isStreaming, selectedModel, navigateToUrl]);
+  }, [messages, isStreaming, selectedModel, navigateToUrl, setSession]);
 
   // MCP-UI host "prompt" actions: an embedded MCP App can push a prompt into the chat.
   useEffect(() => {
@@ -313,6 +371,8 @@ const App: React.FC = () => {
     setStreamContent('');
     setIsStreaming(false);
     setToolCalls([]);
+    liveToolCalls.current = [];
+    setSession(null);
     setShowBrowser(false);
     setShowMcpWeb(false);
     setMcpWebCaps(null);
@@ -381,6 +441,39 @@ const App: React.FC = () => {
       window.surge?.settings?.set('ui.lastModel', selectedModel).catch(() => {});
     }
   }, [selectedModel]);
+
+  useEffect(() => { browserUrlRef.current = browserUrl; }, [browserUrl]);
+
+  // History opens over the chat. The idle window is a 160px bar, so it grows while the list is open.
+  const toggleHistory = useCallback(() => {
+    const next = !showHistory;
+    setShowHistory(next);
+    if (mode === 'idle') window.surge?.window?.resize(next ? 'expanded' : 'compact');
+  }, [showHistory, mode]);
+
+  // Reopen a saved chat: its messages (with tool calls and receipts), its model if it still works,
+  // and the page it was about.
+  const openChat = useCallback(async (id: string) => {
+    const data = await window.surge.chats.get(id).catch(() => null);
+    if (!data) return;
+    setShowHistory(false);
+    setSession(id);
+    setMessages(data.messages
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content || '',
+        onpCalls: m.meta?.onpCalls,
+        toolCalls: m.meta?.toolCalls,
+      })));
+    liveToolCalls.current = [];
+    setToolCalls([]);
+    setStreamContent('');
+    setMode('chat');
+    const model = data.session.model;
+    if (model && models.some((m) => m.id === model && !m.needs)) setSelectedModel(model);
+    if (data.session.pageUrl && data.session.pageUrl !== browserUrl) navigateToUrl(data.session.pageUrl);
+  }, [models, browserUrl, navigateToUrl, setSession]);
 
   // A notice belongs to the page it was about.
   useEffect(() => { setBarNotice(null); }, [browserUrl]);
@@ -460,6 +553,9 @@ const App: React.FC = () => {
               <IconNewChat size={15} />
             </button>
           )}
+          <button className={`btn-icon ${showHistory ? 'active' : ''}`} onClick={toggleHistory} title="Chat history">
+            <IconHistory size={15} />
+          </button>
           <button className="btn-icon" onClick={() => {
             if (mode === 'idle') {
               setMode('chat');
@@ -606,6 +702,15 @@ const App: React.FC = () => {
 
             {showServers && (
               <ServerPanel onClose={() => setShowServers(false)} />
+            )}
+
+            {showHistory && (
+              <HistoryPanel
+                currentId={sessionId}
+                onOpen={openChat}
+                onClose={toggleHistory}
+                onDeleted={(id) => { if (id === sessionIdRef.current) handleNewChat(); }}
+              />
             )}
 
             {agentProposal && (

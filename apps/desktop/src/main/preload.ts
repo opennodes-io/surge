@@ -95,6 +95,16 @@ contextBridge.exposeInMainWorld('surge', {
     untag: (id: string, tag: string) => ipcRenderer.invoke('bookmarks:untag', id, tag),
   },
 
+  // Chat history (local, surge.db)
+  chats: {
+    list: (opts?: { limit?: number; query?: string }) => ipcRenderer.invoke('chats:list', opts),
+    get: (id: string) => ipcRenderer.invoke('chats:get', id),
+    create: (input: { title?: string; model?: string; pageUrl?: string | null }) => ipcRenderer.invoke('chats:create', input),
+    addMessage: (sessionId: string, msg: { role: string; content?: string; meta?: unknown }) => ipcRenderer.invoke('chats:addMessage', sessionId, msg),
+    update: (id: string, patch: { title?: string; model?: string; pageUrl?: string | null }) => ipcRenderer.invoke('chats:update', id, patch),
+    remove: (id: string) => ipcRenderer.invoke('chats:delete', id),
+  },
+
   // History (local-first)
   history: {
     record: (input: any) => ipcRenderer.invoke('history:record', input),
