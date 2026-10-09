@@ -6,6 +6,8 @@ import {
   McpWebDetector,
   runToolLoop,
   toolDefsToMcpTools,
+  LIVE_UI_TOOL,
+  liveUiToolResult,
   type PendingToolCall,
   type ToolExecutionResult,
 } from '@surge/core';
@@ -64,6 +66,15 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
     callTool: (toolName: string, args: any) => browserService.executeTool(toolName, args),
   });
 
+  // ── Live UI: interactive answers the model composes with ui__render; the renderer draws them ──
+  mcpManager.registerVirtualServer({
+    id: 'ui',
+    name: 'Live UI',
+    source: 'in-process',
+    tools: [{ ...LIVE_UI_TOOL, serverId: 'ui' }],
+    callTool: async (_toolName: string, args: any) => liveUiToolResult(args),
+  });
+
   // ── Local-first data: storage, bookmarks/history IPC + virtual server, discovery ──
   registerLocalDataHandlers(mcpManager, settingsService);
 
@@ -120,9 +131,13 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
       // Page tools need a page. Without one, the browser server offers only navigateTo, so the turn
       // doesn't carry ~20 schemas it can't use. Re-read every round: after navigateTo opens a page,
       // the rest of the turn gets the page tools.
+      // Live UI (ui__render) is offered unless it's switched off, and not to Ollama Local's default
+      // llama3.2 (3B): asked for a comparison, it wrote broken JSON instead of an answer.
+      const liveUi = settingsService.get('ui.liveUi') !== false && model !== 'ollama-local';
       const toolDefs = () => {
         const pageOpen = browserService.hasPage();
-        return mcpManager.getToolDefinitions((serverId, toolName) => pageOpen || serverId !== 'browser' || toolName === 'navigateTo');
+        return mcpManager.getToolDefinitions((serverId, toolName) =>
+          (pageOpen || serverId !== 'browser' || toolName === 'navigateTo') && (liveUi || serverId !== 'ui'));
       };
       const mcpSystemPrompt = mcpManager.getSystemPrompt();
       const browserContext = await browserService.getContextPrompt();

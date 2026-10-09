@@ -98,7 +98,7 @@ Verification scripts for the ONP integration:
 - The packaged app drives the same way (`release/win-unpacked/Surge.exe --remote-debugging-port=… --user-data-dir=…`). Add `--inspect=<port>` to reach its main process, where `process.mainModule.require(...)` works.
 - **Test the installed copy, not `win-unpacked`, for module problems.** `win-unpacked` sits inside the repo, so Node's lookup walks up into the repo's `node_modules` and hides modules missing from `app.asar`. A per-user install is `Surge-Setup-*.exe /S`; uninstall with `"%LOCALAPPDATA%\Programs\surge\Uninstall Surge.exe" /currentuser /S`. Both are silent, and user data is kept.
 
-## Known state (2026-10-07)
+## Known state (2026-10-09)
 
 - **All four packages typecheck clean**, and `pnpm --filter @surge/desktop build` succeeds. The old `./mcp-manager` import in `apps/desktop/src/main/services/browser-service.ts` now comes from `@surge/core/mcp`.
 - **ONP discovery works against the hosted registry by default**, verified in the running app: 40 ONP models in the picker, each with the description "TIER · node · measured ms" and a price.
@@ -168,7 +168,28 @@ Verification scripts for the ONP integration:
 - **Bugs (open):**
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Private mode with tools.* Local models without tool support fail through the router: Surge's prompt-based tool fallback only triggers for `vllm-custom` / `ollama-local`.
-  - *Heavy prompts.* The chat sends all 27 browser + bookmarks tool definitions every turn (~3.2k prompt tokens), which is slow on small CPU nodes and inflates paid ceilings.
+  - *Heavy prompts.* With a page open, the chat sends every browser + bookmarks tool definition each turn (~3.2k prompt tokens), and `ui__render` adds ~800 more. Without a page, the browser server offers only `navigateTo`. This is slow on small CPU nodes and inflates paid ceilings.
+- **Live UI: interactive answers** (`packages/core/src/ui/live-ui.ts`; `LiveUiView.tsx` / `.css` in the renderer). Instead of text, the model can answer with a small native view by calling `ui__render`. The tool lives on the in-process virtual server `ui`, registered in `ipc-handlers.ts`; the hub doesn't expose it.
+  - A spec is `{title?, blocks[]}` with 8 block types: text (markdown), stats, table, chart (bar or line), list, compare, buttons and form.
+  - List rows, compare cards and buttons either send a prompt (`surge:prompt`) or open an http(s) link in Surge's browser (`surge:open-url`, handled in `App.tsx`). A form fills the `{field}` placeholders in its prompt and appends unused fields (`fillFormPrompt`).
+  - **Validation is hand-written** (`validateLiveUi`, no new dependency) and lenient: bad blocks are skipped and reported while the rest render. Limits: ≤ 30 blocks, capped sizes, only http(s) URLs. A JSON-string spec is accepted.
+    - A missing or unknown `type` is inferred from the block's fields (`inferType`). A local gemma left it out four times in a row before inference was added.
+  - **The schema is flat**: one `blocks.items` object carries every type's optional fields, because Gemini needs flat, non-recursive schemas. The description spells out each block's shape.
+  - **What the model hears** (`liveUiToolResult`):
+    - On success: "Shown to the user…", plus at most one short sentence and no repeat of the view's contents.
+    - On failure: `isError` with the reasons, then one more try or a plain-text answer.
+  - **In the chat**, a successful `ui__render` call is drawn as the view in place of a tool block (`ToolCall` in `ChatPanel.tsx`). An invalid spec falls back to the usual tool block. Chat history keeps each tool call's args, so a reopened chat redraws its views.
+  - **Charts** are inline SVG, no chart library:
+    - Grouped bars with 2px gaps; lines with 4px-radius points; recessive gridlines.
+    - `<title>` tooltips, a legend for more than one series, and `max-width: 600px`.
+    - Series colors `--lui-c1..4`, validated with the dataviz validator. Dark: `#0ea5c6 #d97706 #8b5cf6 #ec4899`; light: `#0891b2 #b45309 #7c3aed #db2777`.
+    - Table selectors are scoped under `.lui` so they outrank the chat's markdown table styles.
+  - **On by default.** It's switched in Settings → Models → Interactive answers (`ui.liveUi`).
+    - It's never offered to `ollama-local`: llama3.2 (3B), asked for a comparison, wrote broken JSON as text instead of an answer. With it gated off, that model answers in text.
+  - **Tests and verification:**
+    - `packages/core/test/verify-live-ui.ts` (19 checks) runs in `pnpm test`.
+    - The dev build was driven with a mock OpenAI-compatible model: every block rendered, the light theme applied, compare, form and link actions worked, and a reopened chat redrew the view.
+    - Real model: Auto (private) on a local gemma drew a compare view in 54 s. It gave both cards the same title, so the schema now asks for "title (names the option)".
 - **Social channels** (`apps/desktop/src/main/services/channels.ts`, `ChannelsPanel.tsx`): Instagram, TikTok, X, Facebook, YouTube, LinkedIn and Reddit, read in the embedded browser with the user's own sign-in (default session cookies).
   - "Signed in" means the site's session cookie is present (`sessionid`, `auth_token`, `c_user`, `LOGIN_INFO`, `li_at`, `reddit_session`). Sign out clears the domain's cookies.
   - **Summarize my feed** opens the feed and asks the chat to use `browser__collectFeed`. The tool waits up to 8s for posts, scrolls ≤ 8 screens, collects the outermost post elements (`article`, `[role=article]`, tweets, `ytd-*-renderer`, `shreddit-post`, LinkedIn and TikTok feed items), dedupes them, and returns text plus permalink.
@@ -234,7 +255,7 @@ Verification scripts for the ONP integration:
 ## What a good next session does
 
 1. **Installers.** Surge 0.1.2 for Windows is the latest published release (see "Windows installer" above).
-   - Each release: bump `apps/desktop` `version` in a PR, merge, push `v<version>`, then review and publish the draft (CONTRIBUTING.md). Publishing is the user's call. Check that it actually published: `gh api repos/opennodes-io/surge/releases` shows `draft=false`. A `v0.1.0` draft, built before the browser-mode fixes, was never published. It and its tag were deleted, so `v0.1.1` is the only tag and release.
+   - Each release: bump `apps/desktop` `version` in a PR, merge, push `v<version>`, then review and publish the draft (CONTRIBUTING.md). Publishing is the user's call. Check that it actually published: `gh api repos/opennodes-io/surge/releases` shows `draft=false`. A `v0.1.0` draft, built before the browser-mode fixes, was never published. It and its tag were deleted, so `v0.1.1` and `v0.1.2` are the only tags and releases.
    - Code signing is the user's decision (a certificate or Azure Trusted Signing). Unsigned, SmartScreen warns about an unknown publisher.
    - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
@@ -242,3 +263,12 @@ Verification scripts for the ONP integration:
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
    - Add a mobile subpath for the platform-agnostic `onp/` modules.
+3. **Live UI, next phases** (the MVP is in "Known state"):
+   - Phase 2:
+     - Draw the view while the tool call streams; today it appears only once the call completes.
+     - Handle interactions locally where no model is needed: sort and filter a table, or recompute a form's derived fields with simple formulas.
+     - Cut the prompt cost, e.g. offer `ui__render` only when the turn looks like a comparison, plan or data question.
+   - Phase 3:
+     - Sandboxed mini-apps: model-written HTML in the existing null-origin MCP-UI iframe.
+     - **Save as app**, to keep a view and reopen it with fresh data.
+     - Page-aware views beside the page in browser mode.

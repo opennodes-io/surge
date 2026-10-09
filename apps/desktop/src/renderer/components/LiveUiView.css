@@ -1,0 +1,322 @@
+/* ── Live UI: interactive answers composed by the model ── */
+
+.lui {
+  /* Chart series, validated for CVD separation, lightness band and contrast (dataviz validator). */
+  --lui-c1: #0ea5c6;
+  --lui-c2: #d97706;
+  --lui-c3: #8b5cf6;
+  --lui-c4: #ec4899;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin: var(--space-sm) 0;
+  padding: var(--space-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  min-width: 0;
+}
+
+[data-theme='light'] .lui {
+  --lui-c1: #0891b2;
+  --lui-c2: #b45309;
+  --lui-c3: #7c3aed;
+  --lui-c4: #db2777;
+}
+
+.lui-title {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.lui-block-title {
+  margin-bottom: 4px;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+}
+
+.lui-text {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.lui-text p {
+  margin: 0 0 6px;
+}
+
+/* stats */
+.lui-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: var(--space-sm);
+}
+
+.lui-stat {
+  padding: var(--space-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  min-width: 0;
+}
+
+.lui-stat-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.lui-stat-label {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.lui-stat-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* table */
+.lui-table-scroll {
+  overflow-x: auto;
+}
+
+/* ".lui" in the selectors outranks the chat's markdown table styles (.message-content th/td). */
+.lui .lui-table {
+  width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.lui .lui-table th,
+.lui .lui-table td {
+  padding: 5px 8px;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: top;
+  color: var(--text-primary);
+}
+
+.lui .lui-table th {
+  background: transparent;
+  color: var(--text-secondary);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* chart */
+.lui-chart {
+  margin: 0;
+}
+
+/* Charts scale with the column but stop growing at a comfortable size on wide windows. */
+.lui-chart svg {
+  display: block;
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+}
+
+.lui-grid {
+  stroke: var(--border-subtle);
+  stroke-width: 1;
+}
+
+.lui-baseline {
+  stroke: var(--text-muted);
+  stroke-width: 1;
+}
+
+.lui-axis {
+  fill: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--font-sans);
+}
+
+.lui-c1 { fill: var(--lui-c1); stroke: var(--lui-c1); }
+.lui-c2 { fill: var(--lui-c2); stroke: var(--lui-c2); }
+.lui-c3 { fill: var(--lui-c3); stroke: var(--lui-c3); }
+.lui-c4 { fill: var(--lui-c4); stroke: var(--lui-c4); }
+
+rect.lui-c1, rect.lui-c2, rect.lui-c3, rect.lui-c4 { stroke: none; }
+
+.lui-line {
+  fill: none;
+  stroke-width: 2;
+}
+
+/* a surface ring keeps overlapping points apart */
+.lui-point {
+  stroke: var(--bg-secondary);
+  stroke-width: 2;
+}
+
+.lui-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--space-md);
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.lui-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 5px;
+  border-radius: 3px;
+  vertical-align: -1px;
+  background: currentColor;
+}
+
+.lui-swatch.lui-c1 { background: var(--lui-c1); }
+.lui-swatch.lui-c2 { background: var(--lui-c2); }
+.lui-swatch.lui-c3 { background: var(--lui-c3); }
+.lui-swatch.lui-c4 { background: var(--lui-c4); }
+
+/* list */
+.lui-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.lui-list-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  column-gap: var(--space-sm);
+  padding: 7px 8px;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  text-align: left;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+}
+
+.lui-list-item.clickable {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.lui-list-item.clickable:hover,
+.lui-list-item.clickable:focus-visible {
+  background: var(--bg-glass-hover);
+}
+
+.lui-list-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.lui-list-sub {
+  grid-column: 1;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.lui-chevron {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  color: var(--text-muted);
+}
+
+/* compare: side by side, stacking in the narrow column */
+.lui-compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-sm);
+}
+
+.lui-compare-card {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  text-align: left;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.lui-compare-card.clickable {
+  cursor: pointer;
+}
+
+.lui-compare-card.clickable:hover,
+.lui-compare-card.clickable:focus-visible {
+  border-color: var(--accent-cyan);
+}
+
+.lui-compare-title {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.lui-compare-card ul {
+  margin: 0;
+  padding-left: 1.1em;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+/* buttons */
+.lui-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* form */
+.lui-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.lui-field span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.lui-field b {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.lui-field input[type='text'],
+.lui-field input[type='number'],
+.lui-field select {
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+}
+
+.lui-field input[type='range'] {
+  accent-color: var(--lui-c1);
+}
+
+.lui-submit {
+  align-self: flex-start;
+}

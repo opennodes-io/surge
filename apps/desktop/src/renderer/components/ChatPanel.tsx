@@ -2,6 +2,8 @@ import React, { useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import McpToolCallBlock from './McpToolCallBlock';
+import LiveUiView from './LiveUiView';
+import { validateLiveUi } from '@surge/core/ui';
 import { IconUser, IconBot } from './Icons';
 import type { ChatMessage, OnpCall } from '../types';
 import type { ToolCallData } from './McpToolCallBlock';
@@ -37,6 +39,13 @@ const OnpCallLine: React.FC<{ call: OnpCall }> = ({ call }) => (
   </div>
 );
 
+// A finished ui__render call is drawn as its Live UI view; everything else (and a view whose spec
+// has nothing valid) is the usual tool-call block.
+const ToolCall: React.FC<{ data: ToolCallData }> = ({ data }) => {
+  const isView = data.serverId === 'ui' && data.toolName === 'render' && data.status === 'success';
+  return isView && validateLiveUi(data.args).spec ? <LiveUiView args={data.args} /> : <McpToolCallBlock data={data} />;
+};
+
 interface ChatPanelProps {
   messages: ChatMessage[];
   streamContent: string;
@@ -62,7 +71,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, streamContent, isStream
             <div className="message-content">
               {msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="tool-calls-section">
-                  {msg.toolCalls.map((tc) => <McpToolCallBlock key={tc.id} data={tc} />)}
+                  {msg.toolCalls.map((tc) => <ToolCall key={tc.id} data={tc} />)}
                 </div>
               )}
               {msg.role === 'assistant' ? (
@@ -79,9 +88,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, streamContent, isStream
 
         {toolCalls.length > 0 && (
           <div className="tool-calls-section fade-in">
-            {toolCalls.map((tc) => (
-              <McpToolCallBlock key={tc.id} data={tc} />
-            ))}
+            {toolCalls.map((tc) => <ToolCall key={tc.id} data={tc} />)}
           </div>
         )}
 

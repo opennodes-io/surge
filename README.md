@@ -30,6 +30,7 @@
 
 **Also**
 - Gemini, Groq, Claude, Mistral, Ollama, and any OpenAI-compatible endpoint (vLLM, LM Studio, LocalAI, …).
+- **Interactive answers:** for comparisons, plans and numbers, the model can reply with a small native view instead of text: stats, tables, charts, comparison cards, buttons and forms. A click sends the next prompt or opens a link in Surge's browser. You can turn it off in Settings → Models.
 - API keys kept in the OS keychain (Electron `safeStorage`); imported catalogs get one key per host, sent only to that host.
 - **Channels:** read and summarize your Instagram, TikTok, X, Facebook, YouTube, LinkedIn and Reddit feeds in Surge's browser, signed in with your own accounts. Surge only reads, and only when you ask: it never posts, likes or messages.
 - **Sign in to remote MCP servers** with OAuth (the MCP authorization spec): Surge opens the sign-in page in your browser and keeps the tokens in the OS keychain; Sign out forgets them.

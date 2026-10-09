@@ -367,6 +367,16 @@ const App: React.FC = () => {
     return () => window.removeEventListener('surge:prompt', onPrompt as EventListener);
   }, [handleSubmit]);
 
+  // Live UI links open in Surge's browser.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const url = (e as CustomEvent<string>).detail;
+      if (typeof url === 'string' && /^https?:\/\//i.test(url)) navigateToUrl(url);
+    };
+    window.addEventListener('surge:open-url', onOpen);
+    return () => window.removeEventListener('surge:open-url', onOpen);
+  }, [navigateToUrl]);
+
   const togglePrivate = useCallback(async () => {
     const turningOn = !privateMode;
     if (turningOn) modelBeforePrivate.current = selectedModel;
