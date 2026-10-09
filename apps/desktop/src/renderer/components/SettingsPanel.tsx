@@ -69,6 +69,8 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
   const [onpKeyError, setOnpKeyError] = useState('');
   // Private mode (embedded ollama-router): status, LAN peers, opt-in mDNS discovery
   const [privateStatus, setPrivateStatus] = useState<PrivateStatus | null>(null);
+  // Live UI: the model may answer with interactive views (ui__render); on unless switched off.
+  const [liveUi, setLiveUi] = useState(true);
   const [newPeer, setNewPeer] = useState('');
   // Surge hub (local MCP server for other AI apps)
   const [hub, setHub] = useState<HubStatus | null>(null);
@@ -85,6 +87,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
       setKeysEncrypted(secrets.encrypted);
       setOnpKeys(await window.surge.onpKeys.list());
       setPrivateStatus(await window.surge.private.status());
+      setLiveUi((await s.get('ui.liveUi')) !== false);
       const hubStatus = await window.surge.hub.status();
       setHub(hubStatus);
       setHubPort(String(hubStatus.port));
@@ -277,6 +280,16 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                 ☀️ Light
               </button>
             </div>
+
+            <h3>Interactive answers</h3>
+            <label style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', marginBottom: '6px', fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
+              <input type="checkbox" checked={liveUi} style={{ marginTop: '3px' }}
+                onChange={e => { setLiveUi(e.target.checked); window.surge.settings.set('ui.liveUi', e.target.checked); }} />
+              Let the model answer with interactive views: comparisons, tables, charts, lists and small forms (Live UI)
+            </label>
+            <p className="settings-hint" style={{ marginBottom: '20px' }}>
+              Clicking a view's buttons sends a follow-up message. Not offered to Ollama Local's default model (llama3.2), which is too small to build views reliably.
+            </p>
 
             <h3>Model Preferences</h3>
             <p className="settings-hint" style={{ marginBottom: '16px' }}>

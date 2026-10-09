@@ -138,6 +138,8 @@ const TOOL_LABELS: Record<string, string> = {
   pressKey: 'Pressed a key',
   detectMcpBTools: "Checked the page's MCP-B tools",
   collectFeed: 'Read the feed',
+  // Live UI (shown as a block only while building, or when the spec had nothing valid)
+  render: 'Building a view',
   callMcpBTool: 'Used a page tool',
   // Bookmarks & history
   bookmark_add: 'Saved a bookmark',
