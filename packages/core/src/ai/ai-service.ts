@@ -65,8 +65,17 @@ const hostOf = (o: Pick<OnpOffering, 'endpointBase'>) => new URL(o.endpointBase)
 /** Private mode's advisor model: routes only to local and LAN models (served by @opennodes/ollama-router). */
 export const PRIVATE_AUTO_MODEL = 'private:auto-private';
 
+/** A tool call while the model is still writing it: its arguments so far (incomplete JSON). */
+export interface ToolCallDelta {
+  id: string;
+  name: string;
+  argsText: string;
+}
+
 interface StreamCallbacks {
   onToken: (token: string) => void;
+  /** Tool-call arguments as they stream (OpenAI-compatible providers; Gemini sends calls whole). */
+  onToolCallDelta?: (delta: ToolCallDelta) => void;
   onToolCall?: (toolCalls: PendingToolCall[]) => void;
   onOnpCall?: (call: OnpCallRecord) => void;
   onEnd: () => void;
@@ -818,6 +827,9 @@ export class AiService {
             if (tc.id) pending.id = tc.id;
             if (tc.function?.name) pending.name = tc.function.name;
             if (tc.function?.arguments) pending.args += tc.function.arguments;
+            if (pending.name && tc.function?.arguments) {
+              callbacks.onToolCallDelta?.({ id: pending.id, name: pending.name, argsText: pending.args });
+            }
           }
         }
       }

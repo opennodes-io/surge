@@ -1,5 +1,10 @@
-// Live UI: spec validation, the tool result the model sees, and form prompt filling (run via tsx).
-import { validateLiveUi, liveUiToolResult, fillFormPrompt, LIVE_UI_TOOL } from '@surge/core/ui';
+// Live UI: spec validation, the tool result the model sees, form prompts, streaming previews,
+// formulas and when the tool is offered (run via tsx).
+import {
+  validateLiveUi, liveUiToolResult, fillFormPrompt, LIVE_UI_TOOL, parsePartialJson, compileFormula,
+  computeFormValues, formatLiveUiNumber, shouldOfferLiveUi, type LiveUiField,
+} from '@surge/core/ui';
+import { runToolLoop } from '@surge/core/orchestrator';
 
 const checks: Array<[string, boolean]> = [];
 const check = (name: string, ok: boolean) => checks.push([name, ok]);
@@ -67,6 +72,99 @@ check('tool is named render with a flat schema', LIVE_UI_TOOL.name === 'render' 
 // 5) Forms.
 check('form placeholders filled', fillFormPrompt('Plan {hours} hours for {goal}', { hours: '6', goal: 'Web' }) === 'Plan 6 hours for Web');
 check('unused fields appended', fillFormPrompt('Plan it', { hours: '6' }) === 'Plan it\nhours: 6');
+
+// 6) Streaming: incomplete arguments parse as far as they go.
+check('partial JSON: a complete document parses as is', JSON.stringify(parsePartialJson('{"a":[1,2]}')) === '{"a":[1,2]}');
+check('partial JSON: a string being written grows', (parsePartialJson('{"blocks":[{"type":"text","text":"Hel') as any)?.blocks[0].text === 'Hel');
+check('partial JSON: a half-written key is cut', JSON.stringify(parsePartialJson('{"blocks":[{"type":"text","te')) === '{"blocks":[{"type":"text"}]}');
+check('partial JSON: trailing comma and half literal cut', JSON.stringify(parsePartialJson('[1,2,')) === '[1,2]' && JSON.stringify(parsePartialJson('{"a":1,"b":tru')) === '{"a":1}');
+check('partial JSON: escapes', (parsePartialJson('{"a":"x\\') as any)?.a === 'x' && (parsePartialJson('{"a":"x\\u00') as any)?.a === 'x'
+  && (parsePartialJson('{"a":"say \\"hi') as any)?.a === 'say "hi');
+check('partial JSON: nothing yet', parsePartialJson('') === undefined && parsePartialJson('   ') === undefined);
+// Stream the full spec a few characters at a time: it never throws, blocks only ever appear, and the
+// end is the whole view.
+const fullText = JSON.stringify(full);
+let lastCount = 0, monotonic = true, sawPartialView = false;
+for (let end = 1; end <= fullText.length; end += 5) {
+  const count = validateLiveUi(parsePartialJson(fullText.slice(0, end))).spec?.blocks.length ?? 0;
+  if (count < lastCount) monotonic = false;
+  if (count > 0 && count < 8) sawPartialView = true;
+  lastCount = count;
+}
+check('streamed spec: blocks only appear, never vanish', monotonic && sawPartialView);
+check('streamed spec: ends as the whole view', validateLiveUi(parsePartialJson(fullText)).spec?.blocks.length === 8);
+const twoSeries = validateLiveUi({ blocks: [{ type: 'chart', labels: ['a', 'b'], series: [{ name: 'x', values: [1, 2] }, { name: 'y', values: [3] }] }] });
+check('a chart keeps its good series and reports the short one', (twoSeries.spec?.blocks[0] as any)?.series.length === 1 && /series\[1\]/.test(twoSeries.errors.join()));
+
+// 7) Formulas: arithmetic only, checked names.
+const calc = (src: string, vars: Record<string, number> = {}) => {
+  const c = compileFormula(src, Object.keys(vars));
+  return 'error' in c ? c.error : c.run(vars);
+};
+check('formula precedence', calc('2+3*4') === 14 && calc('(2+3)*4') === 20 && calc('-2^2') === -4 && calc('2^-1') === 0.5 && calc('2^3^2') === 512);
+check('formula functions', calc('round(2.345, 2)') === 2.35 && calc('round(-2.5)') === -3 && calc('max(1, 7, 3)') === 7 && calc('min(4, 2)') === 2
+  && calc('sqrt(16) + abs(-1) + floor(1.9) + ceil(1.1)') === 8);
+check('formula comparisons and if', calc('if(qty > 10, 0.9, 1)', { qty: 12 }) === 0.9 && calc('if(qty > 10, 0.9, 1)', { qty: 3 }) === 1 && calc('qty == 3', { qty: 3 }) === 1);
+check('formula names come from the form', calc('price * qty', { price: 2.5, qty: 4 }) === 10 && /unknown name "rate"/.test(String(calc('price * rate', { price: 1 }))));
+check('formula errors are explained', /unknown function "eval"/.test(String(calc('eval(1)'))) && /round takes 1–2 arguments/.test(String(calc('round()')))
+  && /unexpected "\)"/.test(String(calc('1 + )'))) && /empty/.test(String(calc('  '))) && /expected "\)"/.test(String(calc('(1 + 2'))));
+check('formula limits: length and nesting', /longer than/.test(String(calc('1+'.repeat(200) + '1'))) && /too deeply nested/.test(String(calc('('.repeat(60) + '1' + ')'.repeat(60)))));
+check('formula: no answer is undefined, not Infinity', calc('1 / 0') === undefined && calc('x + 1', { x: NaN }) === undefined);
+check('formula: no reaching into objects', /unexpected "\."/.test(String(calc('constructor.name', { constructor: 1 }))) && calc('toString', { toString: 2 }) === 2);
+
+// 8) Computed fields and calculators.
+const calculator = validateLiveUi({ blocks: [{ type: 'form', title: 'Split the bill', fields: [
+  { name: 'bill', label: 'Bill', kind: 'number', value: 120, unit: '$' },
+  { name: 'tip', label: 'Tip', kind: 'slider', min: 0, max: 30, value: 15, unit: '%' },
+  { name: 'people', label: 'People', kind: 'number', value: 4 },
+  { name: 'total', label: 'Total', formula: 'round(bill * (1 + tip / 100), 2)', unit: '$' },
+  { name: 'each', label: 'Each pays', kind: 'computed', formula: 'round(total / people, 2)', unit: '$' },
+  { name: 'later', label: 'Bad', kind: 'computed', formula: 'nope * 2' },
+] }] });
+const calcForm = calculator.spec?.blocks[0] as any;
+check('a calculator needs no submit', !!calcForm && !calcForm.submit && calcForm.fields.length === 5);
+check('a formula without kind is computed', calcForm?.fields[3].kind === 'computed');
+check('a bad formula is skipped and explained', /fields\[5\]\.formula: unknown name "nope"/.test(calculator.errors.join()));
+const inputs = { bill: '120', tip: '15', people: '4' };
+const values = computeFormValues(calcForm.fields as LiveUiField[], inputs);
+check('computed fields chain in order', values.total === 138 && values.each === 34.5);
+check('a missing input shows no result', computeFormValues(calcForm.fields as LiveUiField[], { ...inputs, people: '' }).each === undefined);
+check('a form without submit or computed fields is explained', /unless the form has computed fields/.test(validateLiveUi({ blocks: [{ type: 'form', fields: [{ name: 'a', label: 'A' }] }] }).errors.join()));
+check('numbers formatted with units', formatLiveUiNumber(1234.567, '$') === '$1,234.57' && formatLiveUiNumber(-5, '$') === '-$5' && formatLiveUiNumber(34.5, '€') === '€34.50'
+  && formatLiveUiNumber(12.5, 'h') === '12.5 h' && formatLiveUiNumber(8, '%') === '8%' && formatLiveUiNumber(0.333333) === '0.33');
+check('schema offers the computed kind', (LIVE_UI_TOOL.inputSchema.properties.blocks.items.properties.fields.items.properties.kind as any).enum.includes('computed'));
+
+// 9) When the tool is offered ("When it helps").
+check('offered for comparisons, plans, numbers', ['Compare Python and JavaScript', 'Python vs Go', 'Make me a 4-week plan', 'How much is a flight to Lisbon?', 'Show a chart of EV sales', 'Calculate my mortgage']
+  .every((q) => shouldOfferLiveUi(q, false)));
+check('not offered for plain questions', ['hi there', 'Write a haiku about autumn', 'What is the capital of France?', 'Fix this typo: teh'].every((q) => !shouldOfferLiveUi(q, false)));
+check('a follow-up to a view keeps it', shouldOfferLiveUi('and Rust?', true));
+
+// 10) The tool loop passes streaming arguments through, before the call starts.
+const events: string[] = [];
+await runToolLoop({
+  ai: {
+    streamChat: async (_c: any, _m: any, cb: any) => {
+      if (events.includes('start')) return cb.onEnd();
+      cb.onToolCallDelta({ id: 'c1', name: 'ui__render', argsText: '{"blocks":[' });
+      cb.onToolCallDelta({ id: 'c1', name: 'ui__render', argsText: '{"blocks":[]}' });
+      await cb.onToolCall([{ id: 'c1', functionName: 'ui__render', arguments: { blocks: [] } }]);
+    },
+  } as any,
+  model: 'x',
+  conversation: [{ role: 'user', content: 'hi' }],
+  toolDefs: [],
+  executeTool: async () => ({ resultText: 'ok' }),
+  callbacks: {
+    onToken: () => {},
+    onToolCallDelta: (d) => events.push(`delta:${d.argsText.length}`),
+    onToolCallStart: () => events.push('start'),
+    onToolCallResult: () => events.push('result'),
+    onEnd: () => events.push('end'),
+    onError: (e) => events.push(`error:${e}`),
+  },
+});
+check('tool loop: deltas, then start, result, end', events.join() === 'delta:11,delta:13,start,result,end');
 
 for (const [name, ok] of checks) console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}`);
 const failed = checks.filter(([, ok]) => !ok).length;

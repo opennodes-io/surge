@@ -168,10 +168,25 @@ Verification scripts for the ONP integration:
 - **Bugs (open):**
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Private mode with tools.* Local models without tool support fail through the router: Surge's prompt-based tool fallback only triggers for `vllm-custom` / `ollama-local`.
-  - *Heavy prompts.* With a page open, the chat sends every browser + bookmarks tool definition each turn (~3.2k prompt tokens), and `ui__render` adds ~800 more. Without a page, the browser server offers only `navigateTo`. This is slow on small CPU nodes and inflates paid ceilings.
+  - *Heavy prompts.* With a page open, the chat sends every browser + bookmarks tool definition each turn (~3.2k prompt tokens). Without a page, the browser server offers only `navigateTo`. `ui__render` (~900 tokens, 3.2k of a no-page turn's 5.1k characters of tools) goes only to turns that look like they need it (Live UI's "When it helps"). This is slow on small CPU nodes and inflates paid ceilings.
 - **Live UI: interactive answers** (`packages/core/src/ui/live-ui.ts`; `LiveUiView.tsx` / `.css` in the renderer). Instead of text, the model can answer with a small native view by calling `ui__render`. The tool lives on the in-process virtual server `ui`, registered in `ipc-handlers.ts`; the hub doesn't expose it.
   - A spec is `{title?, blocks[]}` with 8 block types: text (markdown), stats, table, chart (bar or line), list, compare, buttons and form.
   - List rows, compare cards and buttons either send a prompt (`surge:prompt`) or open an http(s) link in Surge's browser (`surge:open-url`, handled in `App.tsx`). A form fills the `{field}` placeholders in its prompt and appends unused fields (`fillFormPrompt`).
+  - **Local interactions** (phase 2), with no model round trip:
+    - Tables sort by any column: ascending, descending, then the model's order. Numbers sort by value, and `cellNumber` reads `$1,200`, `41k` and `12.5%`. Tables with 6 or more rows get a row filter.
+    - Forms can have `computed` fields: a `formula` over the fields above them, recalculated as the user types, shown with an optional `unit`. A form with computed fields needs no submit, so it works as a calculator; on submit, computed values fill placeholders like any field.
+    - **Formulas** (`ui/formula.ts`) use a hand-written parser and evaluator, not `eval`. They allow numbers, field names, `+ - * / ^ ( )`, comparisons, `min max round floor ceil abs sqrt if`.
+      - There is no property access: a name is read only as one of the form's own values.
+      - Unknown names and functions are rejected when the spec is validated, and the model is told why.
+      - Limits: 300 characters and 40 levels of nesting.
+      - `round` works in decimal, so `round(2.345, 2)` is 2.35.
+      - Money units show cents: `$34.50`.
+  - **Streaming** (phase 2): the view is drawn while the model writes the call.
+    - `AiService` emits `onToolCallDelta` (arguments so far) for OpenAI-compatible streams, and `runToolLoop` passes it on.
+    - Main parses `ui__render`'s partial arguments (`parsePartialJson`), at most every 120 ms, and sends them as `mcp:toolCall` with status `pending`. Sends are synchronous, so none can arrive after the call starts.
+    - The renderer draws a pending view dashed, with "Building the view…", and nothing clickable. Previews whose call never started are dropped, as is a preview under a different id (a provider that sent the id late).
+    - Validation is what makes it work: incomplete blocks are invalid until they're complete, and a chart skips a short series instead of disappearing. The test streams a full spec 5 characters at a time and checks that blocks only ever appear.
+    - Gemini sends tool calls whole, and so does Ollama's OpenAI endpoint (one chunk with all the arguments, checked with gemma4), so private mode's views appear when done.
   - **Validation is hand-written** (`validateLiveUi`, no new dependency) and lenient: bad blocks are skipped and reported while the rest render. Limits: ≤ 30 blocks, capped sizes, only http(s) URLs. A JSON-string spec is accepted.
     - A missing or unknown `type` is inferred from the block's fields (`inferType`). A local gemma left it out four times in a row before inference was added.
   - **The schema is flat**: one `blocks.items` object carries every type's optional fields, because Gemini needs flat, non-recursive schemas. The description spells out each block's shape.
@@ -184,12 +199,19 @@ Verification scripts for the ONP integration:
     - `<title>` tooltips, a legend for more than one series, and `max-width: 600px`.
     - Series colors `--lui-c1..4`, validated with the dataviz validator. Dark: `#0ea5c6 #d97706 #8b5cf6 #ec4899`; light: `#0891b2 #b45309 #7c3aed #db2777`.
     - Table selectors are scoped under `.lui` so they outrank the chat's markdown table styles.
-  - **On by default.** It's switched in Settings → Models → Interactive answers (`ui.liveUi`).
+  - **When it's offered:** Settings → Models → Interactive answers. `ui.liveUi` is `false` (Off), `'always'` (Every turn), or anything else, which means **When it helps**, the default.
+    - When it helps: `shouldOfferLiveUi` checks the latest user message against English cues (compare, vs, plan, chart, table, how much, calculate, best, options, …). A turn that follows a view keeps the tool, so "and Rust?" still gets one. `followsView` looks at the previous assistant message's saved tool calls.
+    - The choice is made once per turn, in `ai:streamChat`.
     - It's never offered to `ollama-local`: llama3.2 (3B), asked for a comparison, wrote broken JSON as text instead of an answer. With it gated off, that model answers in text.
   - **Tests and verification:**
-    - `packages/core/test/verify-live-ui.ts` (19 checks) runs in `pnpm test`.
-    - The dev build was driven with a mock OpenAI-compatible model: every block rendered, the light theme applied, compare, form and link actions worked, and a reopened chat redrew the view.
-    - Real model: Auto (private) on a local gemma drew a compare view in 54 s. It gave both cards the same title, so the schema now asks for "title (names the option)".
+    - `packages/core/test/verify-live-ui.ts` (48 checks) runs in `pnpm test`. It covers validation, partial JSON and a streamed spec, formulas and their limits, computed fields, the gating cues, and the tool loop passing deltas through before the call starts.
+    - MVP: the dev build was driven with a mock OpenAI-compatible model. Every block rendered, the light theme applied, compare, form and link actions worked, and a reopened chat redrew the view.
+    - Phase 2: driven with a mock that streams the arguments 24 characters at a time.
+      - The view grew over 2.4 s with nothing clickable, then all 7 buttons enabled.
+      - The calculator recomputed (bill 200, tip 20%, 5 people → $240 / $48) and showed "—" for an empty input.
+      - Sort, the third-click reset and the filter ("2 of 10 rows") worked with no model request.
+      - A greeting went out without `ui__render`, while a comparison and its follow-up got it; Off and Every turn behaved as named.
+    - Real model: Auto (private) on a local gemma drew a compare view in 54 s. It gave both cards the same title, so the schema now asks for "title (names the option)". After phase 2 it drew one in 78 s, with "Python" and "JavaScript" as the titles; the build was running at the same time.
 - **Social channels** (`apps/desktop/src/main/services/channels.ts`, `ChannelsPanel.tsx`): Instagram, TikTok, X, Facebook, YouTube, LinkedIn and Reddit, read in the embedded browser with the user's own sign-in (default session cookies).
   - "Signed in" means the site's session cookie is present (`sessionid`, `auth_token`, `c_user`, `LOGIN_INFO`, `li_at`, `reddit_session`). Sign out clears the domain's cookies.
   - **Summarize my feed** opens the feed and asks the chat to use `browser__collectFeed`. The tool waits up to 8s for posts, scrolls ≤ 8 screens, collects the outermost post elements (`article`, `[role=article]`, tweets, `ytd-*-renderer`, `shreddit-post`, LinkedIn and TikTok feed items), dedupes them, and returns text plus permalink.
@@ -263,11 +285,10 @@ Verification scripts for the ONP integration:
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
    - Add a mobile subpath for the platform-agnostic `onp/` modules.
-3. **Live UI, next phases** (the MVP is in "Known state"):
-   - Phase 2:
-     - Draw the view while the tool call streams; today it appears only once the call completes.
-     - Handle interactions locally where no model is needed: sort and filter a table, or recompute a form's derived fields with simple formulas.
-     - Cut the prompt cost, e.g. offer `ui__render` only when the turn looks like a comparison, plan or data question.
+3. **Live UI, next phases** (the MVP and phase 2 are in "Known state"):
+   - Phase 2 follow-ups:
+     - The "When it helps" cues are English only; other languages get no view unless the setting is "Every turn".
+     - Chart legends could toggle series.
    - Phase 3:
      - Sandboxed mini-apps: model-written HTML in the existing null-origin MCP-UI iframe.
      - **Save as app**, to keep a view and reopen it with fresh data.

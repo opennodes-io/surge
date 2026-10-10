@@ -8,6 +8,8 @@ import {
   toolDefsToMcpTools,
   LIVE_UI_TOOL,
   liveUiToolResult,
+  shouldOfferLiveUi,
+  parsePartialJson,
   type PendingToolCall,
   type ToolExecutionResult,
 } from '@surge/core';
@@ -131,9 +133,16 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
       // Page tools need a page. Without one, the browser server offers only navigateTo, so the turn
       // doesn't carry ~20 schemas it can't use. Re-read every round: after navigateTo opens a page,
       // the rest of the turn gets the page tools.
-      // Live UI (ui__render) is offered unless it's switched off, and not to Ollama Local's default
-      // llama3.2 (3B): asked for a comparison, it wrote broken JSON instead of an answer.
-      const liveUi = settingsService.get('ui.liveUi') !== false && model !== 'ollama-local';
+      // Live UI (ui__render): `ui.liveUi` is false (off), 'always', or anything else ("When it helps":
+      // only turns that look like a comparison, plan, data or calculation question, or that follow a
+      // view, carry the tool's ~900 prompt tokens). Never offered to Ollama Local's default llama3.2
+      // (3B): asked for a comparison, it wrote broken JSON instead of an answer.
+      const liveUiMode = settingsService.get('ui.liveUi');
+      const lastUser = [...messages].reverse().find((m: any) => m.role === 'user');
+      const lastAssistant = [...messages].reverse().find((m: any) => m.role === 'assistant');
+      const followsView = !!lastAssistant?.toolCalls?.some((t: any) => t.serverId === 'ui' && t.status === 'success');
+      const liveUi = liveUiMode !== false && model !== 'ollama-local'
+        && (liveUiMode === 'always' || shouldOfferLiveUi(String(lastUser?.content ?? ''), followsView));
       const toolDefs = () => {
         const pageOpen = browserService.hasPage();
         return mcpManager.getToolDefinitions((serverId, toolName) =>
@@ -150,6 +159,19 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
 
       const conversation = messages.map((m: any) => ({ role: m.role, content: m.content }));
 
+      // A view is drawn while the model writes it: ui__render's arguments so far, parsed as far as
+      // they go, at most every 120 ms. Sent synchronously, so none can land after the call starts.
+      const previewSentAt = new Map<string, number>();
+      const previewView = (d: { id: string; name: string; argsText: string }) => {
+        if (d.name !== 'ui__render') return;
+        const now = Date.now();
+        if (now - (previewSentAt.get(d.id) ?? 0) < 120) return;
+        const args = parsePartialJson(d.argsText);
+        if (!args || typeof args !== 'object') return;
+        previewSentAt.set(d.id, now);
+        sender.send('mcp:toolCall', { id: d.id, name: d.name, ...toolLabels(d.name), status: 'pending', args });
+      };
+
       await runToolLoop({
         ai: aiService,
         model,
@@ -160,6 +182,7 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
         maxRounds: MAX_TOOL_CALL_ROUNDS,
         callbacks: {
           onToken: (token) => sender.send('ai:token', token),
+          onToolCallDelta: previewView,
           onToolCallStart: (i) =>
             sender.send('mcp:toolCall', { id: i.id, name: i.name, ...toolLabels(i.name), status: 'running', args: i.args }),
           onToolCallResult: (i) =>

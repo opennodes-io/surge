@@ -81,7 +81,63 @@
   color: var(--text-muted);
 }
 
+/* while the model is still writing the view: drawn as far as it goes, nothing clickable yet */
+.lui.lui-pending {
+  border-style: dashed;
+}
+
+.lui-pending button:disabled,
+.lui-pending input:disabled,
+.lui-pending select:disabled {
+  cursor: progress;
+}
+
+.lui-building {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  animation: lui-breathe 1.4s ease-in-out infinite;
+}
+
+@keyframes lui-breathe {
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lui-building { animation: none; }
+}
+
 /* table */
+.lui-table-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px var(--space-sm);
+  margin-bottom: 4px;
+}
+
+.lui-table-head .lui-block-title {
+  margin-bottom: 0;
+}
+
+.lui-filter {
+  width: 160px;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+}
+
+.lui-table-count {
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
 .lui-table-scroll {
   overflow-x: auto;
 }
@@ -105,10 +161,42 @@
 }
 
 .lui .lui-table th {
+  padding: 0;
   background: transparent;
   color: var(--text-secondary);
   font-weight: 700;
   white-space: nowrap;
+}
+
+/* a header is a button that sorts by its column */
+.lui-sort {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lui-sort-mark {
+  font-size: 9px;
+  color: var(--text-muted);
+  opacity: 0;
+}
+
+.lui-sort:hover .lui-sort-mark,
+.lui-sort:focus-visible .lui-sort-mark,
+.lui-sort.active .lui-sort-mark {
+  opacity: 1;
+}
+
+.lui-sort.active {
+  color: var(--text-primary);
 }
 
 /* chart */
@@ -277,10 +365,37 @@ rect.lui-c1, rect.lui-c2, rect.lui-c3, rect.lui-c4 { stroke: none; }
 }
 
 /* form */
-.lui-form {
+.lui-form fieldset {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.lui-form legend {
+  float: left; /* a floated legend lays out like any other flex child */
+  width: 100%;
+  padding: 0;
+}
+
+/* a computed field: a live result, recalculated as the inputs change */
+.lui-field.lui-computed {
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.lui-computed output {
+  font-size: var(--text-base);
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
 }
 
 .lui-field {
