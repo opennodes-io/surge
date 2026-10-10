@@ -119,7 +119,12 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const unsub = window.surge?.mcp?.onToolCall?.((data: any) => {
-      const list = liveToolCalls.current;
+      // 'pending' is a call the model is still writing (a Live UI view drawn as it streams). Once a
+      // call starts, a preview that streamed under another id (a provider that sent the id late) goes.
+      let list = liveToolCalls.current;
+      if (data.status !== 'pending') {
+        list = list.filter(t => !(t.status === 'pending' && t.id !== data.id && t.serverId === data.serverId && t.toolName === data.toolName));
+      }
       const i = list.findIndex(t => t.id === data.id);
       liveToolCalls.current = i >= 0 ? list.map((t, j) => (j === i ? { ...t, ...data } : t)) : [...list, data];
       setToolCalls(liveToolCalls.current);
@@ -268,7 +273,8 @@ const App: React.FC = () => {
 
     // A finished reply: tool calls move from the live list onto the message, and it's saved.
     const finishReply = (content: string) => {
-      const turnTools = liveToolCalls.current;
+      // A preview whose call never started (the stream failed mid-call) isn't part of the reply.
+      const turnTools = liveToolCalls.current.filter(t => t.status !== 'pending');
       liveToolCalls.current = [];
       setToolCalls([]);
       if (!content && !onpCalls.length && !turnTools.length) return;

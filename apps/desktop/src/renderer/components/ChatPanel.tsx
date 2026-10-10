@@ -39,11 +39,13 @@ const OnpCallLine: React.FC<{ call: OnpCall }> = ({ call }) => (
   </div>
 );
 
-// A finished ui__render call is drawn as its Live UI view; everything else (and a view whose spec
-// has nothing valid) is the usual tool-call block.
+// A ui__render call is drawn as its Live UI view: while the model writes it (pending) and runs it,
+// as far as it goes and not yet clickable; then finished. Everything else, a view that has nothing
+// valid yet, and a failed one are the usual tool-call block.
 const ToolCall: React.FC<{ data: ToolCallData }> = ({ data }) => {
-  const isView = data.serverId === 'ui' && data.toolName === 'render' && data.status === 'success';
-  return isView && validateLiveUi(data.args).spec ? <LiveUiView args={data.args} /> : <McpToolCallBlock data={data} />;
+  const isView = data.serverId === 'ui' && data.toolName === 'render' && data.status !== 'error';
+  if (isView && validateLiveUi(data.args).spec) return <LiveUiView args={data.args} pending={data.status !== 'success'} />;
+  return <McpToolCallBlock data={data.status === 'pending' ? { ...data, status: 'running' } : data} />;
 };
 
 interface ChatPanelProps {
