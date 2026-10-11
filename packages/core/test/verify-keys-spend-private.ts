@@ -9,6 +9,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { startOllamaRouter } from '@opennodes/ollama-router';
 import { AiService, PRIVATE_AUTO_MODEL, type OnpCallRecord } from '../src/ai/ai-service.js';
+import { runToolLoop } from '../src/orchestrator/index.js';
 import { SurgeStore } from '../src/storage/index.js';
 import type { SettingsPort, SecretStorePort } from '../src/ports/index.js';
 
@@ -76,10 +77,48 @@ async function main() {
     const minTier = url.searchParams.get('tier');
     json(res, 200, { offerings: minTier ? all.filter((o) => o.tier !== 'unverified') : all });
   });
+  // Local models: tiny and mid call tools; plain:4b can't (its capabilities say so); odd:2b can't
+  // either, and its capabilities can't be read, so only its refusal tells.
+  const refusals: string[] = [];
+  let toolPrompt = '';
   const ollama = await serve((req, body, res) => {
-    if (req.url === '/api/tags') return json(res, 200, { models: [{ name: 'tiny:1b', details: { parameter_size: '1B' } }, { name: 'mid:8b', details: { parameter_size: '8B' } }] });
-    if (req.url === '/api/show') return json(res, 200, { capabilities: ['completion', 'tools'], model_info: {} });
-    if (req.url === '/v1/chat/completions') { seen.ollama.push(body.model); return reply(res, body, 'ollama'); }
+    if (req.url === '/api/tags') {
+      return json(res, 200, { models: ['tiny:1b', 'mid:8b', 'plain:4b', 'odd:2b'].map((name) => ({ name, details: { parameter_size: name.split(':')[1].toUpperCase() } })) });
+    }
+    if (req.url === '/api/show') {
+      if (body?.model === 'odd:2b') return json(res, 500, { error: 'show failed' });
+      return json(res, 200, { capabilities: body?.model === 'plain:4b' ? ['completion'] : ['completion', 'tools'], model_info: {} });
+    }
+    if (req.url === '/v1/chat/completions') {
+      seen.ollama.push(body.model);
+      const noTools = body.model === 'plain:4b' || body.model === 'odd:2b';
+      if (noTools && body.tools) {
+        refusals.push(body.model);
+        return json(res, 400, { error: { message: `registry.ollama.ai/library/${body.model} does not support tools`, type: 'invalid_request_error' } });
+      }
+      // Prompt-based tool calling: a tool call in text, then an answer from the tool's result.
+      const last = body.messages.at(-1);
+      const toolsInPrompt = String(body.messages.find((m: any) => m.role === 'system')?.content ?? '').includes('You have access to these tools');
+      if (toolsInPrompt && String(last.content).startsWith('[Tool result for echo__say]')) return reply(res, { ...body, messages: [{ content: `done (${last.content})` }] }, 'ollama');
+      if (toolsInPrompt) {
+        toolPrompt = String(body.messages.find((m: any) => m.role === 'system').content);
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        const pieces = ({
+          'just talk': ['1 ', '<', ' 2 <'],  // plain text with "<": held back only while it could be a marker
+          // What gemma3:12b really sent: the schema echoed back around the value, under "parameters".
+          'say hi echo': ['<tool_call>{"name": "echo__say", "parameters": {"text": {"type": "string", "description": "What to say", "value": "hi"}}}</tool_call>'],
+          'say hi fence': ['<tool_call>\n```json\n{"name": "echo__say", "arguments": "{\\"text\\": \\"hi\\"}"}\n```'],  // fenced, string args, never closed
+          'say hi broken': ['Trying: <tool_call>{"name": "echo__say", "arguments": {'],
+        } as Record<string, string[]>)[last.content]
+          ?? ['Let me do that. <tool_', 'call>{"name": "echo__say", "arguments": {"text": "hi"}}</tool_call>'];
+        for (const piece of pieces) {
+          res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: piece } }] })}\n\n`);
+        }
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
+        return res.end('data: [DONE]\n\n');
+      }
+      return reply(res, body, 'ollama');
+    }
     json(res, 404, {});
   });
 
@@ -150,21 +189,62 @@ async function main() {
   ai.setPrivateRouter(router.origin);
   const registryBefore = seen.registry;
   models = await ai.listModels();
-  check('private mode lists only the local models, led by Auto (private)', models.map((m) => m.id).join() === `${PRIVATE_AUTO_MODEL},private:tiny:1b,private:mid:8b`,
-    models.map((m) => m.id).join());
+  check('private mode lists only the local models, led by Auto (private)',
+    models.map((m) => m.id).join() === `${PRIVATE_AUTO_MODEL},private:tiny:1b,private:mid:8b,private:plain:4b,private:odd:2b`, models.map((m) => m.id).join());
+  const plain = models.find((m) => m.id === 'private:plain:4b');
+  check('a local model without the tools capability is marked: tools via prompt', plain?.supportsToolCalling === false && !!plain?.description.includes('tools via prompt')
+    && models.find((m) => m.id === 'private:tiny:1b')?.supportsToolCalling === true && models.find((m) => m.id === 'private:odd:2b')?.supportsToolCalling === true,
+    plain?.description);
   const refused = await errorOf(send('onp:auto', 'leak?'));
   check('anything else is refused', refused.includes('Private mode is on'), refused);
   r = await send('private:tiny:1b', 'local');
   check('a chosen local model answers through the router', r.content === 'ollama:tiny:1b:local' && seen.ollama.at(-1) === 'tiny:1b', r.content);
   r = await send(PRIVATE_AUTO_MODEL, 'auto local');
-  check('auto-private routes to one of the local models', /^ollama:(tiny:1b|mid:8b):auto local$/.test(r.content), r.content);
+  check('auto-private routes to one of the local models', /^ollama:(tiny:1b|mid:8b|plain:4b|odd:2b):auto local$/.test(r.content), r.content);
   const streamed = await new Promise<string>((resolve) => {
     let text = '';
     ai.streamChat([{ role: 'user', content: 'stream local' }], PRIVATE_AUTO_MODEL, {
       onToken: (t) => { text += t; }, onEnd: () => resolve(text), onError: (e) => resolve(`error: ${e}`),
     });
   });
-  check('auto-private streams too', /^ollama:(tiny:1b|mid:8b):stream local$/.test(streamed), streamed);
+  check('auto-private streams too', /^ollama:(tiny:1b|mid:8b|plain:4b|odd:2b):stream local$/.test(streamed), streamed);
+
+  // Tools with models that can't call them natively: described in the prompt instead, through a
+  // whole tool-loop round trip (the tool call parsed from text, its result fed back as text).
+  const echoTool = { type: 'function' as const, function: { name: 'echo__say', description: 'Says something', parameters: { type: 'object', properties: { text: { type: 'string' } } } } };
+  const toolTurn = async (model: string, ask = 'say hi') => {
+    const calls: string[] = [];
+    let text = '';
+    await runToolLoop({
+      ai, model, conversation: [{ role: 'user', content: ask }], toolDefs: [echoTool as any],
+      executeTool: async (tc) => { calls.push(`${tc.functionName}(${JSON.stringify(tc.arguments)})`); return { resultText: `said ${tc.arguments.text}` }; },
+      callbacks: { onToken: (t) => { text += t; }, onToolCallStart: () => {}, onToolCallResult: () => {}, onEnd: () => {}, onError: (e) => { text += `error: ${e}`; } },
+    });
+    return { calls: calls.join(), text };
+  };
+  let turn = await toolTurn('private:plain:4b');
+  check('a model without tools: the call is parsed from text and its result answered', turn.calls === 'echo__say({"text":"hi"})' && turn.text.endsWith('done ([Tool result for echo__say]: said hi)'),
+    JSON.stringify(turn));
+  // The mock streams the marker split ("<tool_" + "call>…"), as models do.
+  check('…and no tool-call markup reaches the reply, even split across chunks', !turn.text.includes('<tool') && turn.text.startsWith('Let me do that. '), turn.text);
+  check('…with no refused request first: its capabilities said so', !refusals.includes('plain:4b'), refusals.join());
+  turn = await toolTurn('private:plain:4b', 'just talk');
+  check('a plain answer with "<" in prompt mode arrives whole', turn.calls === '' && turn.text === '1 < 2 <', JSON.stringify(turn));
+  check('the prompt describes tools as signatures, not raw schema', toolPrompt.includes('- echo__say(text?: string): Says something') && !toolPrompt.includes('"type":"string"'),
+    toolPrompt.split('\n').find((l) => l.includes('echo__say(')));
+  turn = await toolTurn('private:plain:4b', 'say hi echo');
+  check('a schema echoed around the value, under "parameters", is unwrapped', turn.calls === 'echo__say({"text":"hi"})', JSON.stringify(turn));
+  turn = await toolTurn('private:plain:4b', 'say hi fence');
+  check('a fenced call with string arguments and no closing tag is still read', turn.calls === 'echo__say({"text":"hi"})', JSON.stringify(turn));
+  turn = await toolTurn('private:plain:4b', 'say hi broken');
+  check('an unreadable call is shown as text, not swallowed', turn.calls === '' && turn.text.startsWith('Trying: <tool_call>{"name"'), JSON.stringify(turn));
+  turn = await toolTurn('private:odd:2b');
+  check('a model that refuses tools (unknown capabilities): retried with tools in the prompt', turn.calls === 'echo__say({"text":"hi"})' && turn.text.endsWith('said hi)')
+    && refusals.filter((m) => m === 'odd:2b').length === 1, `${JSON.stringify(turn)} refusals=${refusals.join()}`);
+  turn = await toolTurn('private:odd:2b');
+  check('…and remembered: its next turn starts in prompt mode', turn.calls === 'echo__say({"text":"hi"})' && refusals.filter((m) => m === 'odd:2b').length === 1, refusals.join());
+  turn = await toolTurn('private:tiny:1b');
+  check('a model with tools still gets them natively', seen.ollama.at(-1) === 'tiny:1b' && !refusals.includes('tiny:1b'), JSON.stringify(turn));
   check('the registry was never contacted in private mode', seen.registry === registryBefore, `${seen.registry - registryBefore} requests`);
   settingsStore['private.enabled'] = false;
   ai.setPrivateRouter(null);

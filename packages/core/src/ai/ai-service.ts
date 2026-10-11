@@ -97,6 +97,110 @@ export function describeGeminiError(err: unknown): string {
   return raw.replace(/^\[GoogleGenerativeAI Error\]:\s*/, 'Gemini: ');
 }
 
+/**
+ * A server saying the model can't take `tools`: vLLM without a tool parser ("tool_choice",
+ * "--tool-call-parser", "--enable-auto-tool-choice"), or an Ollama model without the capability
+ * ("… does not support tools"). Behind the private router only "upstream 400" survives: the router
+ * drops the upstream error body.
+ */
+function toolsRefused(err: any, viaRouter: boolean): boolean {
+  const msg = String(err?.message ?? '');
+  if (/tool_choice|tool-call-parser|enable-auto-tool|does not support tools/i.test(msg)) return true;
+  return viaRouter && /upstream 400/.test(msg);
+}
+
+const TOOL_CALL_OPEN = '<tool_call>';
+
+/**
+ * The <tool_call>{…}</tool_call> blocks in a reply, read leniently: JSON in a code fence is fine,
+ * and a last block whose closing tag never came is still read if its JSON is whole.
+ */
+function parsePromptToolCalls(text: string): Array<{ name: string } & Record<string, any>> {
+  const calls: Array<{ name: string } & Record<string, any>> = [];
+  const read = (json: string) => {
+    try {
+      const call = JSON.parse(json.trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, ''));
+      if (call && typeof call.name === 'string' && call.name) calls.push(call);
+    } catch { /* not a readable call */ }
+  };
+  const closed = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+  let m: RegExpExecArray | null;
+  let end = 0;
+  while ((m = closed.exec(text)) !== null) { read(m[1]); end = closed.lastIndex; }
+  const open = text.indexOf(TOOL_CALL_OPEN, end);
+  if (open >= 0) read(text.slice(open + TOOL_CALL_OPEN.length));
+  return calls;
+}
+
+/**
+ * A prompt-based tool call's arguments, as models actually write them: under "arguments" (or
+ * "parameters" / "args"), as an object or a JSON string, and with any value that echoes the schema
+ * ({"type": "string", "value": "example.com"}) unwrapped to its value.
+ */
+function promptToolArgs(call: any): Record<string, any> {
+  let args = call.arguments ?? call.parameters ?? call.args ?? {};
+  if (typeof args === 'string') {
+    try { args = JSON.parse(args); } catch { return {}; }
+  }
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return {};
+  const echoesSchema = (v: any) => !!v && typeof v === 'object' && !Array.isArray(v) && 'value' in v && ('type' in v || 'description' in v);
+  return Object.fromEntries(Object.entries(args).map(([k, v]) => [k, echoesSchema(v) ? (v as any).value : v]));
+}
+
+/** How many characters at the end of `text` could be the start of a <tool_call> marker. */
+function partialMarkerAtEnd(text: string): number {
+  for (let k = Math.min(TOOL_CALL_OPEN.length - 1, text.length); k > 0; k--) {
+    if (text.endsWith(TOOL_CALL_OPEN.slice(0, k))) return k;
+  }
+  return 0;
+}
+
+/**
+ * Prompt-based tool calling for models without native support: the tools are described in the
+ * system prompt, the model answers with <tool_call>{"name", "arguments"}</tool_call> blocks, and
+ * earlier tool turns are rewritten as plain messages. Mutates the request params.
+ */
+function describeToolsInPrompt(params: any, tools: ToolDefinition[]): void {
+  // Signatures, not raw JSON Schema: shown {"url": {"type": "string", …}}, small models answer in
+  // that shape ("url": {"type": "string", "value": "example.com"}) instead of "url": "example.com".
+  const signature = (t: ToolDefinition) => {
+    const schema: any = t.function.parameters ?? {};
+    const required = new Set<string>(schema.required ?? []);
+    const args = Object.entries<any>(schema.properties ?? {}).map(([name, p]) => {
+      const type = p?.type === 'array' && p.items?.type ? `array of ${p.items.type}` : p?.type ?? 'any';
+      return `${name}${required.has(name) ? '' : '?'}: ${type}${p?.enum ? ` (one of ${p.enum.join(', ')})` : ''}${p?.description ? `, ${p.description}` : ''}`;
+    });
+    return `- ${t.function.name}(${args.join('; ')}): ${t.function.description}`;
+  };
+  const toolDescriptions = tools.map(signature).join('\n');
+
+  const toolSystemPrompt = `\nYou have access to these tools:\n${toolDescriptions}\n\nTo call a tool, output EXACTLY this format (no other text around it):\n<tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>\n"arguments" holds the values themselves, for example <tool_call>{"name": "browser__navigateTo", "arguments": {"url": "https://example.com"}}</tool_call>.\n\nYou can call multiple tools by using multiple <tool_call> blocks. After tool results are provided, continue your response.\n`;
+
+  const sysIdx = params.messages.findIndex((m: any) => m.role === 'system');
+  if (sysIdx >= 0) {
+    params.messages[sysIdx].content += toolSystemPrompt;
+  } else {
+    params.messages.unshift({ role: 'system', content: toolSystemPrompt });
+  }
+
+  // Tool turns become plain messages: these models don't take the 'tool' role or tool_calls.
+  params.messages = params.messages.map((m: any) => {
+    if (m.role === 'tool') {
+      return { role: 'user', content: `[Tool result for ${m.name}]: ${m.content}` };
+    }
+    if (m.role === 'assistant' && m.tool_calls) {
+      const callsText = m.tool_calls.map((tc: any) =>
+        `<tool_call>${JSON.stringify({ name: tc.function.name, arguments: JSON.parse(tc.function.arguments || '{}') })}</tool_call>`
+      ).join('\n');
+      return { role: 'assistant', content: callsText || '' };
+    }
+    return m;
+  });
+
+  delete params.tools;
+  delete params.tool_choice;
+}
+
 /** Conservative prompt-token estimate for the spend ceiling (~3 chars per token, tools included). */
 function estimateInputTokens(params: any): number {
   return Math.ceil((JSON.stringify(params.messages ?? []).length + (params.tools ? JSON.stringify(params.tools).length : 0)) / 3);
@@ -148,6 +252,9 @@ export class AiService {
   // Private mode: an embedded @opennodes/ollama-router (started by the shell) serving local + LAN models only
   private privateRouter: string | null = null;
   private privateClient: OpenAI | null = null;
+  // Whether each private model calls tools natively (Ollama's "tools" capability, via the router's
+  // /api/show). false: Surge describes the tools in the prompt instead. Unknown models try natively.
+  private privateToolSupport = new Map<string, boolean>();
 
   // OpenNodes (ONP) registry: dynamic model discovery with trust tiers + measured perf
   private onpRegistry: OnpRegistryClient | null = null;
@@ -366,6 +473,24 @@ export class AiService {
   setPrivateRouter(origin: string | null): void {
     this.privateRouter = origin;
     this.privateClient = origin ? new OpenAI({ apiKey: 'not-required', baseURL: `${origin}/v1`, maxRetries: 0 }) : null;
+    this.privateToolSupport.clear();
+  }
+
+  /** Whether a private model calls tools natively, from its capabilities; undefined if unknown. */
+  private async probePrivateTools(name: string): Promise<boolean | undefined> {
+    if (this.privateToolSupport.has(name)) return this.privateToolSupport.get(name);
+    try {
+      const res = await fetch(`${this.privateRouter}/api/show`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: name }),
+        signal: AbortSignal.timeout(ONP_FETCH_TIMEOUT_MS),
+      });
+      const caps = res.ok ? (await res.json() as any)?.capabilities : undefined;
+      if (!Array.isArray(caps)) return undefined;
+      this.privateToolSupport.set(name, caps.includes('tools'));
+      return caps.includes('tools');
+    } catch {
+      return undefined;
+    }
   }
 
   /** The router's local and LAN models, led by its auto-private advisor model. */
@@ -375,15 +500,17 @@ export class AiService {
       const res = await fetch(`${this.privateRouter}/router/catalog`, { signal: AbortSignal.timeout(ONP_FETCH_TIMEOUT_MS) });
       const catalog: any = await res.json();
       const own: Array<{ name: string; tier: string; origin: string }> = (catalog.models ?? []).filter((m: any) => m.tier === 'local' || m.tier === 'lan');
+      const tools = await Promise.all(own.map((m) => this.probePrivateTools(m.name)));
       return [
         {
           id: PRIVATE_AUTO_MODEL, name: 'Auto (private)', provider: 'private',
           description: `Picks one of ${own.length} model${own.length === 1 ? '' : 's'} on your machines per prompt · nothing leaves your network`,
           supportsToolCalling: true, level: 'smart', costEstimate: 'Free',
         },
-        ...own.map((m): AiModel => ({
+        ...own.map((m, i): AiModel => ({
           id: `private:${m.name}`, name: m.name, provider: 'private',
-          description: `${m.tier.toUpperCase()} · ${m.origin}`, supportsToolCalling: true, level: 'quick', costEstimate: 'Free',
+          description: `${m.tier.toUpperCase()} · ${m.origin}${tools[i] === false ? ' · tools via prompt' : ''}`,
+          supportsToolCalling: tools[i] !== false, level: 'quick', costEstimate: 'Free',
         })),
       ];
     } catch {
@@ -745,48 +872,24 @@ export class AiService {
 
       let stream: any;
       let onp: OnpCallContext | undefined;
-      let usePromptBasedTools = false;
+      // Models without native tool calling get the tools described in the prompt and answer with
+      // <tool_call> blocks: a private model whose capabilities say so from the first request; vLLM,
+      // Ollama Local and private models whose server refuses the tools, on the retry.
+      const privateName = modelKey.startsWith('private:') ? modelKey.slice('private:'.length) : null;
+      let usePromptBasedTools = !!params.tools && privateName !== null && this.privateToolSupport.get(privateName) === false;
+      if (usePromptBasedTools) describeToolsInPrompt(params, tools ?? []);
 
       try {
         ({ data: stream, onp } = await this.createCompletion(modelKey, client, params));
       } catch (err: any) {
-        // For vLLM/local models that don't support native tool calling,
-        // fall back to prompt-based tool calling
-        const isToolChoiceError = err.message?.includes('tool_choice') || err.message?.includes('tool-call-parser') || err.message?.includes('enable-auto-tool');
-        if (params.tools && isToolChoiceError && (modelKey === 'vllm-custom' || modelKey === 'ollama-local')) {
-          // Inject tool descriptions into system prompt for prompt-based calling
-          const toolDescriptions = (tools || []).map(t =>
-            `- ${t.function.name}: ${t.function.description}\n  Parameters: ${JSON.stringify(t.function.parameters?.properties || {})}`
-          ).join('\n');
-
-          const toolSystemPrompt = `\nYou have access to these tools:\n${toolDescriptions}\n\nTo call a tool, output EXACTLY this format (no other text around it):\n<tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>\n\nYou can call multiple tools by using multiple <tool_call> blocks. After tool results are provided, continue your response.\n`;
-
-          // Update system message with tool instructions
-          const sysIdx = params.messages.findIndex((m: any) => m.role === 'system');
-          if (sysIdx >= 0) {
-            params.messages[sysIdx].content += toolSystemPrompt;
-          } else {
-            params.messages.unshift({ role: 'system', content: toolSystemPrompt });
-          }
-
-          // Also convert any 'tool' role messages to user messages for models that don't support them
-          params.messages = params.messages.map((m: any) => {
-            if (m.role === 'tool') {
-              return { role: 'user', content: `[Tool result for ${m.name}]: ${m.content}` };
-            }
-            if (m.role === 'assistant' && m.tool_calls) {
-              const callsText = m.tool_calls.map((tc: any) =>
-                `<tool_call>${JSON.stringify({ name: tc.function.name, arguments: JSON.parse(tc.function.arguments || '{}') })}</tool_call>`
-              ).join('\n');
-              return { role: 'assistant', content: callsText || '' };
-            }
-            return m;
-          });
-
-          delete params.tools;
-          delete params.tool_choice;
+        const ownServer = modelKey === 'vllm-custom' || modelKey === 'ollama-local' || privateName !== null;
+        if (params.tools && ownServer && toolsRefused(err, privateName !== null)) {
+          // Remembered for the model, so its next turn starts in prompt mode. Not for auto-private,
+          // which may pick a model that does call tools next time.
+          if (privateName && modelKey !== PRIVATE_AUTO_MODEL) this.privateToolSupport.set(privateName, false);
+          describeToolsInPrompt(params, tools ?? []);
           usePromptBasedTools = true;
-          stream = await client!.chat.completions.create(params); // vllm/ollama: client checked above
+          stream = await client!.chat.completions.create(params); // vllm/ollama/private: client checked above
         } else {
           throw err;
         }
@@ -795,6 +898,7 @@ export class AiService {
       // Accumulate tool calls from streaming deltas
       const pendingToolCalls: Map<number, { id: string; name: string; args: string }> = new Map();
       let fullText = ''; // Accumulate full text for prompt-based tool parsing
+      let shown = 0;     // prompt-based tools: how much of fullText the user has seen
 
       for await (const chunk of stream as any) {
         const choice = chunk.choices?.[0];
@@ -804,11 +908,14 @@ export class AiService {
         const textDelta = choice.delta?.content;
         if (textDelta) {
           fullText += textDelta;
-          // For prompt-based tools, buffer tokens containing <tool_call> to avoid showing raw XML
-          if (usePromptBasedTools && fullText.includes('<tool_call>')) {
-            // Don't stream tool call XML to the user — will be parsed after stream ends
-          } else {
+          if (!usePromptBasedTools) {
             callbacks.onToken(textDelta);
+          } else {
+            // Show text up to a <tool_call> block (parsed after the stream), holding back an ending
+            // that may be the start of one: models stream the marker in pieces ("<tool", "_call>").
+            const at = fullText.indexOf(TOOL_CALL_OPEN);
+            const upTo = at >= 0 ? at : fullText.length - partialMarkerAtEnd(fullText);
+            if (upTo > shown) { callbacks.onToken(fullText.slice(shown, upTo)); shown = upTo; }
           }
         }
 
@@ -862,29 +969,21 @@ export class AiService {
       }
 
       // For prompt-based tool calling: parse <tool_call> blocks from the accumulated text
-      if (usePromptBasedTools && fullText.includes('<tool_call>')) {
-        const toolCallRegex = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g;
-        const parsedToolCalls: PendingToolCall[] = [];
-        let match;
-        while ((match = toolCallRegex.exec(fullText)) !== null) {
-          try {
-            const parsed = JSON.parse(match[1]);
-            if (parsed.name) {
-              parsedToolCalls.push({
-                id: `prompt_${Date.now()}_${parsedToolCalls.length}`,
-                functionName: parsed.name,
-                arguments: parsed.arguments || {},
-              });
-            }
-          } catch {
-            // Invalid JSON in tool call — skip
-          }
-        }
+      if (usePromptBasedTools && fullText.includes(TOOL_CALL_OPEN)) {
+        const parsedToolCalls: PendingToolCall[] = parsePromptToolCalls(fullText).map((call, i) => ({
+          id: `prompt_${Date.now()}_${i}`,
+          functionName: call.name,
+          arguments: promptToolArgs(call),
+        }));
         if (parsedToolCalls.length > 0) {
           callbacks.onToolCall?.(parsedToolCalls);
           return;
         }
       }
+
+      // Prompt-based tools: what was held back (an ending that looked like a marker, or a tool call
+      // that couldn't be read) is shown as text rather than lost.
+      if (usePromptBasedTools && shown < fullText.length) callbacks.onToken(fullText.slice(shown));
 
       callbacks.onEnd();
     } catch (err: any) {

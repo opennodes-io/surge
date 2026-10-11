@@ -78,10 +78,16 @@ Verification scripts for the ONP integration:
   - receipts: verified, inflated, foreign key, wrong revision, missing
   - every spend-policy limit
   - tampered-card rejection, and Auto routing with fallback
-- `packages/core/test/verify-keys-spend-private.ts`: 21 checks with mock registry, nodes and Ollama, plus the real `@opennodes/ollama-router`; no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-keys-spend-private.ts`. Covers:
+- `packages/core/test/verify-keys-spend-private.ts`: 33 checks with mock registry, nodes and Ollama, plus the real `@opennodes/ollama-router`; no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-keys-spend-private.ts`. Covers:
   - per-host keys: sent only to their host; unlock imported offerings; join Auto; forgotten on delete
   - the spend ledger: persistence and the by-day / by-node summary
   - private mode: local models only (auto-private too), everything else refused, zero registry requests
+  - private models without native tools, through whole tool-loop round trips:
+    - listed as "tools via prompt", and prompt mode from the first request;
+    - a refusal retried and remembered;
+    - markup split across chunks never leaks, while plain text with `<` arrives whole;
+    - the prompt uses signatures;
+    - schema-echoed, fenced and unclosed calls are read, and an unreadable one is shown as text.
 - `packages/core/test/verify-onp.ts`: a **local** registry with the fixture Echo node. Bundle it with esbuild (externals `@google/generative-ai @libsql/client @modelcontextprotocol/sdk openai`), then run it with node.
 - `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
 
@@ -159,6 +165,16 @@ Verification scripts for the ONP integration:
   - The previous model is restored when private mode is turned off. Private mode is restored at startup.
   - Static LAN peers and opt-in mDNS are set in Settings → Advanced → Private mode.
   - Scope: model calls only. Connected MCP servers and opened pages are not restricted, and the Settings text says so.
+  - **Models without native tool calling** (fixed 2026-10-11; e.g. `gemma3:12b`, whose Ollama capabilities are `completion, vision`):
+    - Before the fix, a tool turn failed: Ollama answers 400 "… does not support tools", and the router replaced that with `502 all candidates failed: <model>: upstream 400`. Its `/v1/chat/completions` drops the upstream body, and Surge's fallback didn't cover `private:*`.
+    - Now `listPrivateModels` reads each model's capabilities from the router's `/api/show`. A model without `tools` is listed as "tools via prompt", with `supportsToolCalling: false`.
+    - That model's turns use prompt-based tool calling (`describeToolsInPrompt`) from the first request. Models whose capabilities can't be read try native tools first.
+    - **The fallback** (`toolsRefused`) recognises vLLM's tool-parser errors, Ollama's "does not support tools", and, behind the router, a bare "upstream 400". It applies to `vllm-custom`, `ollama-local` and `private:*`. A private model that refuses is remembered, so its next turn starts in prompt mode; `auto-private` isn't remembered, since its next pick may call tools. Auto-private also survives on its own: the router tries its next candidate when one fails.
+    - **Prompt-based tool calling** had three problems of its own, now fixed:
+      - Tools were shown as raw JSON Schema, and `gemma3:12b` copied the shape, sending `"url": {"type": "string", "value": "example.com"}`. Tools are now signatures (`name(url: string, The URL…)`) with an example call.
+      - The parser (`parsePromptToolCalls` / `promptToolArgs`) now unwraps a value wrapped in its schema. It also accepts `parameters` / `args`, string arguments, a code fence, and a missing closing tag. A call it can't read is shown as text rather than swallowed.
+      - Streaming held back nothing, so a marker split across chunks leaked `<tool_` into the reply. Text that could start `<tool_call>` is now held until it can't, and released at the end if it was just text.
+    - Verified in the app: `private:gemma3:12b` answered "Open example.com and tell me what the page says" in 104 s. It used two tool rounds (navigate with a clean `url`, then read the page), with no error and no markup in the reply.
   - Verified in the app against the real local Ollama: `gemma4`, `gemma3:12b` and `llama3.2` were listed, and a tool turn was answered through `auto-private`.
   - Verified live against `demo-node.opennodes.io`, inline and by URL, both from a script and in the running app.
 - **Spec conformance gaps (open):**
@@ -167,7 +183,6 @@ Verification scripts for the ONP integration:
 - `OnpTier` includes `attested` / `local` / `lan`. `verified` and `attested` map to the Smart level.
 - **Bugs (open):**
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
-  - *Private mode with tools.* Local models without tool support fail through the router: Surge's prompt-based tool fallback only triggers for `vllm-custom` / `ollama-local`.
   - *Heavy prompts.* With a page open, the chat sends every browser + bookmarks tool definition each turn (~3.2k prompt tokens). Without a page, the browser server offers only `navigateTo`. `ui__render` (~900 tokens, 3.2k of a no-page turn's 5.1k characters of tools) goes only to turns that look like they need it (Live UI's "When it helps"). This is slow on small CPU nodes and inflates paid ceilings.
 - **Live UI: interactive answers** (`packages/core/src/ui/live-ui.ts`; `LiveUiView.tsx` / `.css` in the renderer). Instead of text, the model can answer with a small native view by calling `ui__render`. The tool lives on the in-process virtual server `ui`, registered in `ipc-handlers.ts`; the hub doesn't expose it.
   - A spec is `{title?, blocks[]}` with 8 block types: text (markdown), stats, table, chart (bar or line), list, compare, buttons and form.
