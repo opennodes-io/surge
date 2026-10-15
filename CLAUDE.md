@@ -184,6 +184,15 @@ Verification scripts for the ONP integration:
 - **Bugs (open):**
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Heavy prompts.* With a page open, the chat sends every browser + bookmarks tool definition each turn (~3.2k prompt tokens). Without a page, the browser server offers only `navigateTo`. `ui__render` (~900 tokens, 3.2k of a no-page turn's 5.1k characters of tools) goes only to turns that look like they need it (Live UI's "When it helps"). This is slow on small CPU nodes and inflates paid ceilings.
+- **Tool names every provider accepts** (fixed 2026-10-15; `toolWireName` / `toolNamespace` in `mcp/mcp-manager.ts`):
+  - Tools are offered as `serverId__toolName`, but not every server id is a valid name: MCPWeb sites are `mcpweb:<origin>`, per-site agents `agent:<host>`, and catalog slugs can carry `/` or `.` or start with a digit. MCP tool names may contain dots.
+  - OpenAI-style APIs reject a function name outside `^[a-zA-Z0-9_-]{1,64}$` with a 400 for the whole request. So every chat turn failed while an MCPWeb site or a per-site agent was connected, and Gemini failed the same way.
+  - Names now have to match `^[a-zA-Z_][a-zA-Z0-9_-]{0,62}$`, which satisfies both: Gemini wants a letter or underscore first, and some of its docs say 63 characters.
+  - Names that already fit are unchanged (`browser__navigateTo`, `ui__render`, `manual-…`, kebab slugs), so the hub's names and `ui__render` checks still hold.
+  - Otherwise the server part becomes a slug plus a 6-character FNV hash (`mcpweb-https-example-com-1x2y3z`). A tool part that has dots or is too long becomes a slug plus a hash too.
+  - `parseToolName` matches the names it handed out by scanning the connected servers, so a renamed tool still gets its original name (`docs.read`). It then falls back to a raw `serverId__toolName` and a bare tool name. `toolLabels` gets the real server id and name as before.
+  - The system prompt lists each server under its namespace, and the hub builds its names with `toolWireName`.
+  - `verify-core.ts` checks it end to end: a real MCPWeb site (an in-process MCP server over Streamable HTTP), a mock model that rejects names the way OpenAI does, a full tool round, and a mocked Gemini endpoint.
 - **Live UI: interactive answers** (`packages/core/src/ui/live-ui.ts`; `LiveUiView.tsx` / `.css` in the renderer). Instead of text, the model can answer with a small native view by calling `ui__render`. The tool lives on the in-process virtual server `ui`, registered in `ipc-handlers.ts`; the hub doesn't expose it.
   - A spec is `{title?, blocks[]}` with 8 block types: text (markdown), stats, table, chart (bar or line), list, compare, buttons and form.
   - List rows, compare cards and buttons either send a prompt (`surge:prompt`) or open an http(s) link in Surge's browser (`surge:open-url`, handled in `App.tsx`). A form fills the `{field}` placeholders in its prompt and appends unused fields (`fillFormPrompt`).
