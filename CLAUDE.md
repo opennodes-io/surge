@@ -184,6 +184,21 @@ Verification scripts for the ONP integration:
 - **Bugs (open):**
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Heavy prompts.* With a page open, the chat sends every browser + bookmarks tool definition each turn (~3.2k prompt tokens). Without a page, the browser server offers only `navigateTo`. `ui__render` (~900 tokens, 3.2k of a no-page turn's 5.1k characters of tools) goes only to turns that look like they need it (Live UI's "When it helps"). This is slow on small CPU nodes and inflates paid ceilings.
+- **Security (open): actions run without asking.** The chat's tool loop (up to 10 rounds, `MAX_TOOL_CALL_ROUNDS`) runs every tool unprompted, and that includes action tools: `browser__evaluateScript` (raw JS in the page), click, fill-and-submit, key presses, site-declared MCP-B tools and any connected server's tools.
+  - So text on a page the model reads, or a post in a social feed, can try to steer it into acting with the user's sign-ins (indirect prompt injection). An outside review flagged this on 2026-10-15.
+  - Planned fix: an Allow / Deny card in chat for action tools. Read-only tools keep running, using the hub's `READ_ONLY_TOOLS` list, and connected servers' tools follow their read-only or destructive annotations. Script runs always ask. The open question for the user is whether other actions ask every time or once per site per chat.
+  - The hub is not affected by default: it's off, and read-only unless `hub.allowActions`.
+- **Fixed 2026-10-15** (from the same review):
+  - *Agent code sandbox escape* (`webmcp/agent-code-sandbox.ts`, the opt-in code path of per-site agents, reached only after the user approves an agent's code).
+    - The `vm` context was handed the worker's own `Object`, `Array`, `JSON` and so on, plus a structured-clone `input`. Their constructors lead to the outside `Function`, which the context's `codeGeneration: { strings: false }` doesn't cover. So `Object.constructor('return process')()` reached the worker's `process`, `fetch` and `require`.
+    - Now the context holds no outside object, only its own built-ins and two strings (the input JSON and the page text). Input is parsed, the code run and the result serialized inside the context under one timeout, with `microtaskMode: 'afterEvaluate'`. The worker gets `env: {}`.
+    - `verify-agents.ts` probes escapes through Object, input, arrays, page text, functions and errors (all blocked), checks that no Node globals exist and that a runaway loop or promise job times out. It passes under Node 24 and under Electron's Node 22.16 (`ELECTRON_RUN_AS_NODE=1 electron --import tsx test/verify-agents.ts`).
+    - The old "sandbox blocks require" check passed only because `require` isn't a name in the context; it never tried the escape.
+  - *Duplicate saved servers.*
+    - Manually added servers got `manual-${Date.now()}` ids, and saved servers were deduped by id only, so a real settings file held six copies of one URL.
+    - Now manual ids come from the address (FNV-1a in `ServerPanel.tsx`). `McpManager` saves one entry per endpoint (same URL, with SSE and streamable HTTP treated alike, or the same command line and env). `connectServer` returns a live connection to the same endpoint instead of opening a second, and the constructor folds existing duplicates, keeping the latest config.
+    - Verified in `verify-core.ts`, and in the app on a copy of that settings file: 6 entries → 1 at startup.
+    - Note: `reconnectSaved` is never called by the desktop app, so saved servers aren't reconnected at startup (`mcp.autoReconnect` defaults to true but does nothing). Wiring it is a product decision.
 - **Live UI: interactive answers** (`packages/core/src/ui/live-ui.ts`; `LiveUiView.tsx` / `.css` in the renderer). Instead of text, the model can answer with a small native view by calling `ui__render`. The tool lives on the in-process virtual server `ui`, registered in `ipc-handlers.ts`; the hub doesn't expose it.
   - A spec is `{title?, blocks[]}` with 8 block types: text (markdown), stats, table, chart (bar or line), list, compare, buttons and form.
   - List rows, compare cards and buttons either send a prompt (`surge:prompt`) or open an http(s) link in Surge's browser (`surge:open-url`, handled in `App.tsx`). A form fills the `{field}` placeholders in its prompt and appends unused fields (`fillFormPrompt`).
@@ -297,6 +312,7 @@ Verification scripts for the ONP integration:
    - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
 2. **Follow-ups:**
+   - **Ask before actions in chat** (see "Security (open)"). It needs the user's answer on every time vs once per site per chat.
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
    - Add a mobile subpath for the platform-agnostic `onp/` modules.

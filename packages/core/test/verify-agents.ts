@@ -30,7 +30,7 @@ class MockBrowser implements BrowserPort {
 
 async function main() {
   let pass = true;
-  const check = (name: string, cond: boolean) => { console.log(`${cond ? '✓' : '✗'} ${name}`); pass = pass && cond; };
+  const check = (name: string, cond: boolean, extra = '') => { console.log(`${cond ? '✓' : '✗'} ${name}${!cond && extra ? ` — ${extra}` : ''}`); pass = pass && cond; };
 
   // 1) declarative recipe
   const spec: WebAgentSpec = {
@@ -90,6 +90,30 @@ async function main() {
     blocked = true;
   }
   check('sandbox blocks require', blocked);
+
+  // sandbox: no way out through objects made outside the context. Each probe reports what it
+  // reached; a blocked probe throws (code generation is off) and comes back as 'blocked'.
+  const probe = async (codeStr: string, input: unknown = { a: 1 }) => {
+    try { return JSON.stringify(await runAgentCodeSandbox(codeStr, input, 'page text')); } catch (e: any) { return `blocked: ${e.message}`; }
+  };
+  const escapes = {
+    viaObject: await probe(`return Object.constructor('return typeof process')()`),
+    viaInput: await probe(`return input.constructor.constructor('return typeof process')()`),
+    viaArray: await probe(`return input.list.constructor.constructor('return typeof process')()`, { list: [1] }),
+    viaPage: await probe(`return page.constructor.constructor('return typeof process')()`),
+    viaThis: await probe(`return (function () { return this; }).constructor('return typeof process')()`),
+    viaError: await probe(`try { null.x } catch (e) { return e.constructor.constructor('return typeof process')() }`),
+  };
+  check('sandbox: no escape through Object, input, arrays, page text, functions or errors',
+    Object.values(escapes).every((r) => r.startsWith('blocked:') && /Code generation from strings disallowed/.test(r)), JSON.stringify(escapes));
+  check('sandbox: no Node globals inside', await probe(`return [typeof process, typeof require, typeof fetch, typeof setTimeout, typeof globalThis.Buffer].join()`)
+    === JSON.stringify('undefined,undefined,undefined,undefined,undefined'));
+  check('sandbox: input and page still arrive, JSON values come back',
+    await probe(`return { sum: input.a + input.list.length, words: page.split(' ').length, ok: Array.isArray(input.list) }`, { a: 2, list: [1, 2, 3] })
+      === JSON.stringify({ sum: 5, words: 2, ok: true }));
+  check('sandbox: undefined comes back as null', (await runAgentCodeSandbox('return;', {}, '')) === null);
+  check('sandbox: a runaway loop times out', (await probe('while (true) {}')).startsWith('blocked:'));
+  check('sandbox: a runaway promise job times out too', (await probe('Promise.resolve().then(() => { while (true) {} }); return 1;')).startsWith('blocked:'));
 
   // gated refusal: code tool without approval
   const codeSpec: WebAgentSpec = {
