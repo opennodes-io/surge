@@ -66,6 +66,17 @@ export interface McpTool {
   serverId: string;
 }
 
+/**
+ * Which server a config reaches, whatever its id: its URL (SSE and streamable HTTP alike, since an
+ * SSE config is upgraded when the server speaks streamable HTTP) or its command line and env.
+ */
+function endpointKey(config: McpServerConfig): string | null {
+  if (config.transport === 'stdio') {
+    return config.command ? `stdio ${JSON.stringify([config.command, config.args ?? [], config.env ?? {}])}` : null;
+  }
+  return config.url ? `http ${config.url.trim()}` : null;
+}
+
 // OpenAI-compatible tool definition for AI function calling
 export interface ToolDefinition {
   type: 'function';
@@ -150,6 +161,7 @@ export class McpManager {
 
   constructor(settings: SettingsPort) {
     this.settings = settings;
+    this.tidySavedServers();
   }
 
   // ── Virtual Servers (Web->MCP adapter, in-process repos) ─
@@ -234,13 +246,8 @@ export class McpManager {
   // ── Standard Server Connection ──────────────────────────
   /** `interactive: false` (e.g. reconnecting saved servers) never opens a sign-in page. */
   async connectServer(config: McpServerConfig, opts: { interactive?: boolean } = {}): Promise<ConnectedServer> {
-    // Check connection limit
-    const maxConn = this.settings.getMaxConnections();
-    if (this.connections.size >= maxConn) {
-      throw new Error(`Connection limit reached (${maxConn} servers). Disconnect one, or raise mcp.maxConnections in the settings.`);
-    }
-
-    // Don't double-connect
+    // Don't double-connect: not under the same id, and not to the same server under another id
+    // (adding the same URL or command again).
     if (this.connections.has(config.id)) {
       const existing = this.connections.get(config.id)!;
       if (existing.server.status === 'connected') {
@@ -248,6 +255,15 @@ export class McpManager {
       }
       // Clean up broken connection
       await this.disconnectServer(config.id);
+    }
+    const key = endpointKey(config);
+    const twin = key ? [...this.connections.values()].find((c) => c.server.status === 'connected' && endpointKey(c.server.config) === key) : undefined;
+    if (twin) return twin.server;
+
+    // Check connection limit
+    const maxConn = this.settings.getMaxConnections();
+    if (this.connections.size >= maxConn) {
+      throw new Error(`Connection limit reached (${maxConn} servers). Disconnect one, or raise mcp.maxConnections in the settings.`);
     }
 
     let client: Client;
@@ -555,15 +571,40 @@ export class McpManager {
   }
 
   // ── Persistence ─────────────────────────────────────────
+  // One saved entry per server: a config replaces any saved one with its id or its endpoint (the
+  // same URL or command line), in the first one's place. Manual servers used to get a new id per
+  // connect, so the same URL piled up once per reconnect.
   private saveServerConfig(config: McpServerConfig): void {
     const saved: McpServerConfig[] = this.settings.get('mcp.savedServers') || [];
-    const idx = saved.findIndex(s => s.id === config.id);
-    if (idx >= 0) {
-      saved[idx] = config;
-    } else {
-      saved.push(config);
+    const key = endpointKey(config);
+    const same = (s: McpServerConfig) => s.id === config.id || (key !== null && endpointKey(s) === key);
+    const next: McpServerConfig[] = [];
+    let placed = false;
+    for (const s of saved) {
+      if (!same(s)) next.push(s);
+      else if (!placed) { next.push(config); placed = true; }
     }
-    this.settings.set('mcp.savedServers', saved);
+    if (!placed) next.push(config);
+    this.settings.set('mcp.savedServers', next);
+  }
+
+  /** Folds duplicate saved servers (same id or endpoint) into one, keeping the latest config. */
+  private tidySavedServers(): void {
+    const saved: McpServerConfig[] = this.settings.get('mcp.savedServers') || [];
+    const next: McpServerConfig[] = [];
+    const at = new Map<string, number>();
+    for (const s of saved) {
+      const keys = [`id ${s.id}`, endpointKey(s)].filter((k): k is string => !!k);
+      const i = keys.map((k) => at.get(k)).find((n) => n !== undefined);
+      if (i === undefined) {
+        keys.forEach((k) => at.set(k, next.length));
+        next.push(s);
+      } else {
+        next[i] = s;
+        keys.forEach((k) => at.set(k, i));
+      }
+    }
+    if (next.length !== saved.length) this.settings.set('mcp.savedServers', next);
   }
 
   private removeServerConfig(serverId: string): void {
