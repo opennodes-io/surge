@@ -1,6 +1,7 @@
 // Quick verification of the newest core pieces (run via tsx).
 import { createClient } from '@libsql/client';
 import { SurgeStore, createBookmarksVirtualServer } from '@surge/core';
+import { McpManager } from '@surge/core/mcp';
 import { detectUiResource } from '@surge/core/ui';
 
 async function main() {
@@ -50,8 +51,42 @@ async function main() {
   const migratedOk = ms.pageUrl === 'https://a.example/' && ((await migrated.chat.getMessages(ms.id))[0].meta as any)?.ok === true;
   migrated.close();
 
+  // 5) saved MCP servers: one entry per server. Manual servers used to get a new id per connect, so
+  //    the same URL piled up (six copies in a real settings file).
+  const url = 'http://localhost:60784/mcp/';
+  const settingsStore: Record<string, any> = {
+    'mcp.savedServers': [
+      ...[1, 2, 3, 4, 5, 6].map((n) => ({ id: `manual-17738${n}`, name: 'localhost:60784', transport: 'streamable-http', url })),
+      { id: 'filesystem', name: 'Filesystem', transport: 'stdio', command: 'npx', args: ['-y', 'fs-server', '/a'] },
+      { id: 'filesystem-b', name: 'Filesystem B', transport: 'stdio', command: 'npx', args: ['-y', 'fs-server', '/b'] },
+      { id: 'other', name: 'Other', transport: 'sse', url: 'https://other.example/sse' },
+    ],
+  };
+  const writes: number[] = [];
+  const mm = new McpManager({ get: (k) => settingsStore[k], set: (k, v) => { settingsStore[k] = v; writes.push(1); }, getMaxConnections: () => 25 } as any);
+  const savedIds = () => (settingsStore['mcp.savedServers'] as any[]).map((s) => s.id).join();
+  const tidied = savedIds();
+  // Saving the same URL under a new id replaces the saved one in place; a new server is appended.
+  (mm as any).saveServerConfig({ id: 'manual-again', name: 'localhost:60784', transport: 'streamable-http', url });
+  const afterSameUrl = savedIds();
+  (mm as any).saveServerConfig({ id: 'brand-new', name: 'New', transport: 'streamable-http', url: 'http://localhost:7000/mcp' });
+  const afterNew = savedIds();
+  // Connecting the same URL under another id returns the live connection instead of a second one.
+  const live = { id: 'manual-again', name: 'localhost:60784', status: 'connected', tools: [], config: { id: 'manual-again', name: 'x', transport: 'streamable-http', url } };
+  (mm as any).connections.set('manual-again', { client: {}, transport: {}, server: live });
+  const twin = await mm.connectServer({ id: 'manual-other', name: 'x', transport: 'sse', url });
+  const writesBefore = writes.length;
+  new McpManager({ get: (k) => settingsStore[k], set: (k, v) => { settingsStore[k] = v; writes.push(1); }, getMaxConnections: () => 25 } as any);
+  const dedupeOk =
+    tidied === 'manual-177386,filesystem,filesystem-b,other' &&
+    afterSameUrl === 'manual-again,filesystem,filesystem-b,other' &&
+    afterNew === 'manual-again,filesystem,filesystem-b,other,brand-new' &&
+    twin === live && (mm as any).connections.size === 1 &&
+    writes.length === writesBefore;
+  if (!dedupeOk) console.log('dedupe detail:', { tidied, afterSameUrl, afterNew, twinIsLive: twin === live, extraWrites: writes.length - writesBefore });
+
   const pass =
-    historyOk && migratedOk &&
+    historyOk && migratedOk && dedupeOk &&
     addObj.url === 'https://x.com' && addObj.tags.length === 1 &&
     list.length === 1 &&
     uiHtml?.kind === 'html' && uiHtml.uiType === 'mcp-ui' &&
@@ -62,6 +97,7 @@ async function main() {
   console.log('bookmark vs:', addObj.id ? 'ok' : 'FAIL', '| list:', list.length);
   console.log('ui html:', uiHtml?.kind, '| ui tmpl:', uiTmpl?.uiType, '| ui url:', uiUrl?.url, '| none:', none);
   console.log('chat history:', historyOk ? 'ok' : 'FAIL', '| old db migrated:', migratedOk ? 'ok' : 'FAIL');
+  console.log('saved MCP servers deduped (startup, same URL, live twin):', dedupeOk ? 'ok' : 'FAIL');
   console.log(pass ? '\n✅ CORE VERIFY PASSED' : '\n❌ CORE VERIFY FAILED');
   process.exit(pass ? 0 : 1);
 }

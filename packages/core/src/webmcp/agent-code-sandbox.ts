@@ -1,37 +1,43 @@
 // Gated sandbox for the opt-in arbitrary-code agent path.
 //
 // THREAT MODEL / LIMITS: arbitrary JS is risky. This runner applies defense-in-depth:
-//  - runs in a separate worker_threads Worker (isolated heap; killable)
-//  - the user code executes in a vm context whose globals are an allow-list only
-//    (input, page, JSON, Math, String/Number/Array/Object/Boolean/RegExp) — NO require,
-//    process, fs, net, fetch, global, Buffer, timers
+//  - runs in a separate worker_threads Worker (isolated heap; killable), with an empty environment
+//  - the user code executes in a fresh vm context that holds no object from outside it: only the
+//    context's own built-ins (JSON, Math, Array, …) and two strings, the input and the page text,
+//    parsed inside the context. NO require, process, fs, net, fetch, global, Buffer, timers.
 //  - codeGeneration.strings/wasm disabled in the context (blocks nested eval/new Function)
-//  - hard wall-clock timeout (parent terminates the worker)
+//  - hard wall-clock timeout (parent terminates the worker), and the vm timeout covers the whole
+//    run, microtasks included
 //  - constrained heap via resourceLimits
-// This is NOT a perfect security boundary; it is only ever reached when the user has
-// explicitly approved code execution for a specific agent (spec.codeApproved === true).
+//
+// Why no outside objects: an object made outside the context leads back to the outside Function
+// constructor (`Object.constructor`, `input.constructor.constructor`), which the context's
+// code-generation switch doesn't cover. Handing in the worker's own Object, or a structured-clone
+// `input`, let agent code reach the worker's process, fetch and require. A string is a primitive:
+// its methods come from the context's own String, whose Function stays blocked.
+//
+// Still NOT a perfect security boundary (V8 bugs, resource exhaustion); it is only ever reached
+// when the user has explicitly approved code execution for a specific agent (spec.codeApproved).
 
 const WORKER_SRC = `
 const { parentPort, workerData } = require('node:worker_threads');
 const vm = require('node:vm');
 try {
-  const { code, input, page } = workerData;
+  const { code, inputJson, page } = workerData;
   const sandbox = Object.create(null);
-  sandbox.input = input;
-  sandbox.page = page;
-  sandbox.JSON = JSON;
-  sandbox.Math = Math;
-  sandbox.String = String;
-  sandbox.Number = Number;
-  sandbox.Array = Array;
-  sandbox.Object = Object;
-  sandbox.Boolean = Boolean;
-  sandbox.RegExp = RegExp;
-  const ctx = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
-  const script = new vm.Script('(function(input, page){ "use strict";\\n' + String(code) + '\\n})');
-  const fn = script.runInContext(ctx, { timeout: 3000 });
-  const result = fn(input, page);
-  parentPort.postMessage({ ok: true, result: result === undefined ? null : result });
+  sandbox.__input = inputJson;
+  sandbox.__page = page;
+  const ctx = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false }, microtaskMode: 'afterEvaluate' });
+  // Parse, run and serialize inside the context, under one timeout: only a string comes back out.
+  const script = new vm.Script(
+    '(function () { "use strict";\\n' +
+    '  const run = function (input, page) { "use strict";\\n' + String(code) + '\\n};\\n' +
+    '  const out = run(JSON.parse(__input), __page);\\n' +
+    '  return out === undefined ? "null" : JSON.stringify(out);\\n' +
+    '})()'
+  );
+  const json = script.runInContext(ctx, { timeout: 3000 });
+  parentPort.postMessage({ ok: true, json: typeof json === 'string' ? json : 'null' });
 } catch (e) {
   parentPort.postMessage({ ok: false, error: String((e && e.message) || e) });
 }
@@ -57,7 +63,8 @@ export async function runAgentCodeSandbox(
     let settled = false;
     const worker = new Worker(WORKER_SRC, {
       eval: true,
-      workerData: { code, input, page },
+      workerData: { code, inputJson: JSON.stringify(input ?? null), page: String(page ?? '') },
+      env: {},
       resourceLimits: { maxOldGenerationSizeMb: opts.maxOldGenerationSizeMb ?? 64 },
     });
     const finish = (fn: () => void) => {
@@ -68,7 +75,10 @@ export async function runAgentCodeSandbox(
       fn();
     };
     const timer = setTimeout(() => finish(() => reject(new Error('agent code timed out'))), opts.timeoutMs ?? 5000);
-    worker.once('message', (msg: any) => finish(() => (msg?.ok ? resolve(msg.result) : reject(new Error(msg?.error || 'agent code failed')))));
+    worker.once('message', (msg: any) => finish(() => {
+      if (!msg?.ok) return reject(new Error(msg?.error || 'agent code failed'));
+      try { resolve(JSON.parse(msg.json)); } catch { reject(new Error('agent code returned something that is not JSON')); }
+    }));
     worker.once('error', (err) => finish(() => reject(err)));
   });
 }

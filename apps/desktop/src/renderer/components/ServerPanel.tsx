@@ -128,20 +128,28 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
     refreshServers();
   };
 
+  // A manual server's id comes from its address (FNV-1a), so adding the same URL or command again is
+  // the same server, not another saved copy. It stays within tool-name characters ([a-z0-9-]).
+  const manualId = (address: string) => {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < address.length; i++) h = Math.imul(h ^ address.charCodeAt(i), 0x01000193) >>> 0;
+    return `manual-${h.toString(36)}`;
+  };
+
   const handleManualConnect = async () => {
     const input = connectCommand.trim();
     if (!input) return;
     if (input.startsWith('http://') || input.startsWith('https://')) {
       const url = new URL(input);
       handleConnect({
-        id: `manual-${Date.now()}`,
+        id: manualId(input),
         name: url.hostname + (url.port ? ':' + url.port : ''),
         transport: input.includes('/mcp') ? 'streamable-http' : 'sse',
         url: input,
       });
     } else {
       const parts = input.split(/\s+/);
-      handleConnect({ id: `manual-${Date.now()}`, name: parts[0], transport: 'stdio', command: parts[0], args: parts.slice(1) });
+      handleConnect({ id: manualId(input), name: parts[0], transport: 'stdio', command: parts[0], args: parts.slice(1) });
     }
     setConnectCommand('');
     setShowManual(false);
