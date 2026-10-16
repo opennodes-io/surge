@@ -20,8 +20,11 @@ contextBridge.exposeInMainWorld('surge', {
   ai: {
     chat: (messages: any[], model: string) =>
       ipcRenderer.invoke('ai:chat', messages, model),
-    streamChat: (messages: any[], model: string) =>
-      ipcRenderer.invoke('ai:streamChat', messages, model),
+    // chatKey: which chat this turn belongs to, so its approvals (once per site per chat) carry over.
+    streamChat: (messages: any[], model: string, opts?: { chatKey?: string }) =>
+      ipcRenderer.invoke('ai:streamChat', messages, model, opts ?? {}),
+    // The user's answer on an approval card (Allow / Deny).
+    approve: (toolCallId: string, allow: boolean) => ipcRenderer.invoke('ai:approve', toolCallId, allow),
     onStreamToken: (callback: (token: string) => void) => {
       const handler = (_event: any, token: string) => callback(token);
       ipcRenderer.on('ai:token', handler);

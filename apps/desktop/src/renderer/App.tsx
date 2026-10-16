@@ -49,6 +49,9 @@ const App: React.FC = () => {
   const [showChannels, setShowChannels] = useState(false);
   // The current turn's tool calls, read when the turn ends (state would be stale in that closure).
   const liveToolCalls = useRef<ToolCallData[]>([]);
+  // Which chat a turn belongs to, for approvals (actions ask once per site per chat). A new chat,
+  // or one reopened from history, gets a new key and so asks again.
+  const chatKey = useRef(crypto.randomUUID());
   const browserUrlRef = useRef('');
   // Set once the startup model has been chosen, so the default isn't saved over the user's last pick.
   const modelsReady = useRef(false);
@@ -336,7 +339,7 @@ const App: React.FC = () => {
     });
 
     try {
-      await window.surge.ai.streamChat(newMessages, selectedModel);
+      await window.surge.ai.streamChat(newMessages, selectedModel, { chatKey: chatKey.current });
     } catch (err: any) {
       if (!finished) {
         finished = true;
@@ -407,6 +410,7 @@ const App: React.FC = () => {
     setToolCalls([]);
     liveToolCalls.current = [];
     setSession(null);
+    chatKey.current = crypto.randomUUID();
     setShowBrowser(false);
     setShowMcpWeb(false);
     setMcpWebCaps(null);
@@ -500,6 +504,7 @@ const App: React.FC = () => {
     if (!data) return;
     setShowHistory(false);
     setSession(id);
+    chatKey.current = crypto.randomUUID();
     setMessages(data.messages
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({

@@ -4,7 +4,7 @@ import { app, ipcMain } from 'electron';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { toolWireName, type McpManager } from '@surge/core';
+import { toolWireName, READ_ONLY_TOOLS, type McpManager } from '@surge/core';
 import type { SettingsService } from './settings-service';
 import type { SecretStore } from './secret-store';
 
@@ -21,13 +21,8 @@ import type { SecretStore } from './secret-store';
 
 const DEFAULT_PORT = 4766;
 const EXPOSED_SERVERS = ['browser', 'bookmarks'];
-// Tools that only read. Everything else on the exposed servers changes something.
-const READ_ONLY_TOOLS = new Set([
-  'browser__getPageContent', 'browser__getPageMetadata', 'browser__getLinks', 'browser__getFormFields',
-  'browser__getSelectedText', 'browser__getElementText', 'browser__getElementAttribute', 'browser__getTableData',
-  'browser__waitForSelector', 'browser__detectMcpBTools', 'browser__collectFeed',
-  'bookmarks__bookmark_list', 'bookmarks__bookmark_search', 'bookmarks__history_search', 'bookmarks__history_list',
-]);
+// Tools that only read (READ_ONLY_TOOLS, shared with the chat's approvals in @surge/core).
+// Everything else on the exposed servers changes something.
 const TOKEN_SECRET = 'hub.token';
 const MAX_BODY = 4 * 1024 * 1024;
 

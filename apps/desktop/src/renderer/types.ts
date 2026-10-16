@@ -14,7 +14,8 @@ declare global {
       };
       ai: {
         chat: (messages: ChatMessage[], model: string) => Promise<any>;
-        streamChat: (messages: ChatMessage[], model: string) => Promise<any>;
+        streamChat: (messages: ChatMessage[], model: string, opts?: { chatKey?: string }) => Promise<any>;
+        approve: (toolCallId: string, allow: boolean) => Promise<boolean>;
         onStreamToken: (callback: (token: string) => void) => () => void;
         onStreamEnd: (callback: () => void) => () => void;
         onStreamError: (callback: (error: string) => void) => () => void;

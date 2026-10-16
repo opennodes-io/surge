@@ -17,6 +17,7 @@
 **Tools, through MCP**
 - Connect MCP servers over stdio, SSE or streamable HTTP, and find them in a discovery browser: the public registry.mcp.so catalog, or quality ratings and trust tiers from an MCP_Index registry if you point `mcp.indexUrl` at one.
 - An embedded browser whose page tools are exposed as an MCP server, plus per-site agents that are declarative, approved before they run, and sandboxed when they use code.
+- **Asks before acting:** the model reads freely, but before it clicks, types, submits or uses a server's tool, Surge shows an Allow / Deny card, once per site per chat. Running a script on a page asks every time.
 - MCP Apps / MCP-UI surfaces rendered in a sandboxed, null-origin iframe.
 - Bookmarks and history that other MCP clients can use too, through a standalone MCP server.
 
