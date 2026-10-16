@@ -10,6 +10,9 @@ import {
   liveUiToolResult,
   shouldOfferLiveUi,
   parsePartialJson,
+  createApprovalGate,
+  toolRisk,
+  type ApprovalScope,
   type PendingToolCall,
   type ToolExecutionResult,
 } from '@surge/core';
@@ -33,6 +36,14 @@ let settingsService: SettingsService;
 let browserService: BrowserService;
 
 const MAX_TOOL_CALL_ROUNDS = 10;
+
+// Approvals for actions in chat (orchestrator/approvals.ts): the cards waiting for an answer, by
+// tool call id, and what each chat has allowed so far, by the chat key the renderer sends (a new
+// key per chat, so a new or reopened chat asks again). No answer in 5 minutes counts as Deny.
+const APPROVAL_TIMEOUT_MS = 5 * 60_000;
+const pendingApprovals = new Map<string, (allow: boolean) => void>();
+const chatApprovals = new Map<string, Set<string>>();
+const MAX_REMEMBERED_CHATS = 50;
 
 export function registerIpcHandlers(getBrowserView: () => WebContentsView | null): void {
   const secretStore = new SecretStore();
@@ -127,7 +138,15 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   ipcMain.handle('ai:getModels', async () => aiService.listModels());
 
   // ── AI Streaming with multi-round tool orchestration (core/orchestrator) ──
-  ipcMain.handle('ai:streamChat', async (event, messages: any[], model: string) => {
+  // The user's answer on an approval card.
+  ipcMain.handle('ai:approve', (_event, id: string, allow: boolean) => {
+    const answer = pendingApprovals.get(id);
+    pendingApprovals.delete(id);
+    answer?.(allow === true);
+    return !!answer;
+  });
+
+  ipcMain.handle('ai:streamChat', async (event, messages: any[], model: string, opts: { chatKey?: string } = {}) => {
     const sender = event.sender;
     try {
       // Page tools need a page. Without one, the browser server offers only navigateTo, so the turn
@@ -172,13 +191,66 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
         sender.send('mcp:toolCall', { id: d.id, name: d.name, ...toolLabels(d.name), status: 'pending', args });
       };
 
+      // Actions ask first: once per site (the page's origin) or server per chat; scripts every time.
+      const chatKey = typeof opts.chatKey === 'string' && opts.chatKey ? opts.chatKey : `turn-${Date.now()}`;
+      let allowed = chatApprovals.get(chatKey);
+      if (!allowed) {
+        allowed = new Set<string>();
+        chatApprovals.set(chatKey, allowed);
+        if (chatApprovals.size > MAX_REMEMBERED_CHATS) chatApprovals.delete(chatApprovals.keys().next().value!);
+      }
+      const serverOf = (serverId: string) => mcpManager.getConnectedServers().find((s) => s.id === serverId);
+      const gate = createApprovalGate({
+        allowed,
+        risk: (serverId, toolName) => toolRisk(serverId, toolName, serverOf(serverId)?.tools.find((t) => t.name === toolName)),
+        scope: (serverId): ApprovalScope => {
+          // Browser tools (site-declared MCP-B tools included) act on the open page: its site.
+          if (serverId === 'browser' || serverOf(serverId)?.source === 'mcp-b') {
+            const origin = browserService.pageOrigin();
+            return origin ? { key: `site:${origin}`, label: new URL(origin).host } : { key: 'site:none', label: 'the browser' };
+          }
+          if (serverId === 'bookmarks') return { key: 'bookmarks', label: 'your bookmarks and history' };
+          return { key: `server:${serverId}`, label: serverOf(serverId)?.name ?? serverId };
+        },
+        ask: (req) => new Promise<boolean>((resolve) => {
+          if (sender.isDestroyed()) return resolve(false);
+          const gone = () => done(false);
+          const done = (allow: boolean) => {
+            clearTimeout(timer);
+            sender.removeListener('destroyed', gone);
+            pendingApprovals.delete(req.id);
+            resolve(allow);
+          };
+          const timer = setTimeout(gone, APPROVAL_TIMEOUT_MS);
+          pendingApprovals.set(req.id, done);
+          sender.once('destroyed', gone);
+          const name = callNames.get(req.id) ?? `${req.serverId}__${req.toolName}`;
+          sender.send('mcp:toolCall', {
+            id: req.id, name, ...toolLabels(name), status: 'approval', args: req.args,
+            approval: { risk: req.risk, scope: req.scope.label, remembers: req.remembers },
+          });
+        }),
+      });
+      const callNames = new Map<string, string>();
+      const gatedExecute = async (tc: PendingToolCall): Promise<ToolExecutionResult> => {
+        const parsed = mcpManager.parseToolName(tc.functionName);
+        if (parsed) {
+          callNames.set(tc.id, tc.functionName);
+          const decision = await gate({ id: tc.id, serverId: parsed.serverId, toolName: parsed.toolName, args: tc.arguments });
+          // A thrown error reaches the model as the tool's result, and the card turns into a failed call.
+          if (!decision.allowed) throw new Error(decision.message);
+          if (decision.asked) sender.send('mcp:toolCall', { id: tc.id, name: tc.functionName, ...toolLabels(tc.functionName), status: 'running', args: tc.arguments });
+        }
+        return executeTool(tc);
+      };
+
       await runToolLoop({
         ai: aiService,
         model,
         conversation,
         toolDefs,
         systemPrompt: systemPrompt || undefined,
-        executeTool,
+        executeTool: gatedExecute,
         maxRounds: MAX_TOOL_CALL_ROUNDS,
         callbacks: {
           onToken: (token) => sender.send('ai:token', token),

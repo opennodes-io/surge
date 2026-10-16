@@ -64,6 +64,8 @@ export interface McpTool {
   description: string;
   inputSchema: any;
   serverId: string;
+  /** The server's hints about the tool (MCP tool annotations): readOnlyHint, destructiveHint, … */
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean; title?: string };
 }
 
 /**
@@ -310,6 +312,7 @@ export class McpManager {
       name: t.name,
       description: t.description || '',
       inputSchema: t.inputSchema || {},
+      ...(t.annotations && typeof t.annotations === 'object' ? { annotations: t.annotations } : {}),
       serverId: config.id,
     }));
 

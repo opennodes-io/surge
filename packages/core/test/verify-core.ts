@@ -5,7 +5,7 @@ import { createClient } from '@libsql/client';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { AiService, McpManager, SurgeStore, agentServerId, createBookmarksVirtualServer, runToolLoop, type SettingsPort } from '@surge/core';
+import { AiService, McpManager, SurgeStore, agentServerId, createBookmarksVirtualServer, runToolLoop, toolRisk, type SettingsPort } from '@surge/core';
 import { detectUiResource } from '@surge/core/ui';
 
 const listen = (server: http.Server): Promise<number> =>
@@ -38,7 +38,7 @@ async function verifyToolNames(): Promise<boolean> {
     const mcp = new Server({ name: 'example-site', version: '1.0.0' }, { capabilities: { tools: {} } });
     mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
-        { name: 'search', description: 'Search the site', inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] } },
+        { name: 'search', description: 'Search the site', inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] }, annotations: { readOnlyHint: true } },
         { name: 'docs.read', description: 'Read a docs page', inputSchema: { type: 'object', properties: { path: { type: 'string' } } } },
       ],
     }));
@@ -102,6 +102,13 @@ async function verifyToolNames(): Promise<boolean> {
   plain('io.github.acme/weather', 'get_forecast');
   plain('21st-dev-magic', 'component');
   plain('a-rather-long-catalog-slug-for-a-reporting-server', 'get_the_extremely_detailed_quarterly_report');
+
+  // The server's tool annotations survive into Surge's tool list, so approvals can tell reads apart.
+  const searchTool = web.tools.find((t) => t.name === 'search');
+  const docsTool = web.tools.find((t) => t.name === 'docs.read');
+  check('tool annotations are kept (readOnlyHint), and drive the approval risk',
+    searchTool?.annotations?.readOnlyHint === true && !docsTool?.annotations
+      && toolRisk(web.id, 'search', searchTool) === 'read' && toolRisk(web.id, 'docs.read', docsTool) === 'action');
 
   const defs = mcp.getToolDefinitions();
   const names = defs.map((d) => d.function.name);

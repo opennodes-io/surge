@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import McpToolCallBlock from './McpToolCallBlock';
 import LiveUiView from './LiveUiView';
+import ApprovalCard from './ApprovalCard';
 import { validateLiveUi } from '@surge/core/ui';
 import { IconUser, IconBot } from './Icons';
 import type { ChatMessage, OnpCall } from '../types';
@@ -43,6 +44,8 @@ const OnpCallLine: React.FC<{ call: OnpCall }> = ({ call }) => (
 // as far as it goes and not yet clickable; then finished. Everything else, a view that has nothing
 // valid yet, and a failed one are the usual tool-call block.
 const ToolCall: React.FC<{ data: ToolCallData }> = ({ data }) => {
+  // An action waiting for the user's Allow / Deny.
+  if (data.status === 'approval') return <ApprovalCard data={data} />;
   const isView = data.serverId === 'ui' && data.toolName === 'render' && data.status !== 'error';
   if (isView && validateLiveUi(data.args).spec) return <LiveUiView args={data.args} pending={data.status !== 'success'} />;
   return <McpToolCallBlock data={data.status === 'pending' ? { ...data, status: 'running' } : data} />;

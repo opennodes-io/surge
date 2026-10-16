@@ -353,6 +353,12 @@ export class BrowserService {
     return /^https?:/i.test(url);
   }
 
+  /** The open page's origin ("https://example.com"), or null without a web page. */
+  pageOrigin(): string | null {
+    if (!this.hasPage()) return null;
+    try { return new URL(this.wc!.getURL()).origin; } catch { return null; }
+  }
+
   // ── System Prompt Section ──────────────────────────────
   async getContextPrompt(): Promise<string> {
     const wc = this.wc;

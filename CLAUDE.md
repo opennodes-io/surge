@@ -184,10 +184,31 @@ Verification scripts for the ONP integration:
 - **Bugs (open):**
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Heavy prompts.* With a page open, the chat sends every browser + bookmarks tool definition each turn (~3.2k prompt tokens). Without a page, the browser server offers only `navigateTo`. `ui__render` (~900 tokens, 3.2k of a no-page turn's 5.1k characters of tools) goes only to turns that look like they need it (Live UI's "When it helps"). This is slow on small CPU nodes and inflates paid ceilings.
-- **Security (open): actions run without asking.** The chat's tool loop (up to 10 rounds, `MAX_TOOL_CALL_ROUNDS`) runs every tool unprompted, and that includes action tools: `browser__evaluateScript` (raw JS in the page), click, fill-and-submit, key presses, site-declared MCP-B tools and any connected server's tools.
-  - So text on a page the model reads, or a post in a social feed, can try to steer it into acting with the user's sign-ins (indirect prompt injection). An outside review flagged this on 2026-10-15.
-  - Planned fix: an Allow / Deny card in chat for action tools. Read-only tools keep running, using the hub's `READ_ONLY_TOOLS` list, and connected servers' tools follow their read-only or destructive annotations. Script runs always ask. The open question for the user is whether other actions ask every time or once per site per chat.
-  - The hub is not affected by default: it's off, and read-only unless `hub.allowActions`.
+- **Actions ask first** (added 2026-10-16; `orchestrator/approvals.ts`, `ApprovalCard.tsx`).
+  - The problem, flagged by an outside review on 2026-10-15: the chat's tool loop (up to 10 rounds, `MAX_TOOL_CALL_ROUNDS`) ran every tool unprompted. Text on a page, or a post in a social feed, could try to steer the model into clicking, submitting or running scripts with the user's sign-ins (indirect prompt injection).
+  - **Risk** (`toolRisk`):
+    - *read* runs freely: the shared `READ_ONLY_TOOLS`, which the hub uses too, plus moving around (`navigateTo`, `scrollPage`, `hoverElement`, `waitForNavigation`), and `ui__render`.
+    - *action* asks once per site per chat: click, type or submit, choose, tick, key presses, site-declared MCP-B tools, and bookmark or history writes. Connected servers' tools count as actions unless the server annotates them `readOnlyHint: true`; `McpTool.annotations` is now kept from `listTools`.
+    - *script* (`browser__evaluateScript`) asks every time and is never remembered.
+  - **Scope:**
+    - Browser tools and MCP-B tools: the open page's origin (`BrowserService.pageOrigin`), labelled by host.
+    - Bookmarks: one scope. Any other server: its own scope.
+  - **Flow:**
+    - In `ai:streamChat`, `gatedExecute` runs each call through `createApprovalGate` before `executeTool`.
+    - A call that needs asking is sent as `mcp:toolCall` with status `approval` plus `{risk, scope, remembers}`. The renderer draws `ApprovalCard` in place of the tool block and answers with `ai:approve(id, allow)`.
+    - Allow: the call runs, and an action's scope joins the chat's allowed set.
+    - Deny, no answer in 5 minutes, or a closed window: the gate throws. The model gets "The user declined this action (…). Don't try it again in this turn…", and the block shows "Declined by you".
+  - **Per chat:** the renderer sends a `chatKey` with each turn (`crypto.randomUUID()`, renewed by New Chat and by reopening a chat from history). Main keeps an allowed-scope set per key, for the last 50 chats, in memory only.
+  - **Known limit:** opening pages runs freely, so a steered model could still put data in a URL it opens. Asking for every page would make browsing unusable; clicks, forms and scripts, which act with the user's sign-ins, are what ask.
+  - The hub is unchanged: off by default, and read-only unless `hub.allowActions`.
+  - **Verified:**
+    - `verify-approvals.ts` (21 checks, in `pnpm test`): risks; once per site; a different site asks; Deny isn't remembered; scripts ask every time; servers are their own scope; the next turn of a chat remembers and a new chat asks; and a denied call never runs in the tool loop, with the model hearing it was declined.
+    - `verify-core.ts`: a real MCP server's `readOnlyHint` survives into Surge's tool list.
+    - In the app, with a mock model on example.com:
+      - opening the page didn't ask;
+      - the first click asked "Allow on example.com", and the second didn't;
+      - a script asked with its code shown; Deny reached the model, and the next script asked again ("Run once" → "Example Domain");
+      - a new chat asked again.
 - **Fixed 2026-10-15** (from the same review):
   - *Agent code sandbox escape* (`webmcp/agent-code-sandbox.ts`, the opt-in code path of per-site agents, reached only after the user approves an agent's code).
     - The `vm` context was handed the worker's own `Object`, `Array`, `JSON` and so on, plus a structured-clone `input`. Their constructors lead to the outside `Function`, which the context's `codeGeneration: { strings: false }` doesn't cover. So `Object.constructor('return process')()` reached the worker's `process`, `fetch` and `require`.
@@ -321,7 +342,7 @@ Verification scripts for the ONP integration:
    - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
 2. **Follow-ups:**
-   - **Ask before actions in chat** (see "Security (open)"). It needs the user's answer on every time vs once per site per chat.
+   - Approvals follow-ups, if wanted: a Settings list to review or forget allowed sites, and asking before opening a page with a query string to a new site after untrusted text was read (the exfiltration limit in "Actions ask first").
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
    - Add a mobile subpath for the platform-agnostic `onp/` modules.

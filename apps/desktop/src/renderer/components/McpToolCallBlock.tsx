@@ -10,9 +10,12 @@ interface ToolCallData {
   serverName?: string;
   toolName: string;
   args: any;
-  status: 'pending' | 'running' | 'success' | 'error';
+  /** approval: an action waiting for the user's Allow / Deny (see ApprovalCard). */
+  status: 'pending' | 'approval' | 'running' | 'success' | 'error';
   result?: any;
   durationMs?: number;
+  /** With status 'approval': what the card asks about. */
+  approval?: { risk: 'action' | 'script'; scope: string; remembers: boolean };
 }
 
 interface McpToolCallBlockProps {
@@ -164,6 +167,8 @@ function describeCall(data: ToolCallData): { label: string; detail?: string } {
   const args = data.args || {};
   if (data.status === 'error') {
     const first = extractText(data.result).split('\n')[0].replace(/^Error:\s*/, '');
+    // An approval card the user said no to (the model gets the longer explanation).
+    if (first.startsWith('The user declined this action')) return { label, detail: 'Declined by you' };
     return { label, detail: first };
   }
   switch (data.toolName) {
@@ -395,7 +400,8 @@ const McpToolCallBlock: React.FC<McpToolCallBlockProps> = ({ data }) => {
 
   const statusIcon = () => {
     switch (data.status) {
-      case 'pending': return <IconCircle size={14} className="tcb-status-icon pending" />;
+      case 'pending':
+      case 'approval': return <IconCircle size={14} className="tcb-status-icon pending" />;
       case 'running': return <div className="spinner spinner-sm"></div>;
       case 'success': return <IconCheck size={14} className="tcb-status-icon success status-pop" />;
       case 'error': return <IconX size={14} className="tcb-status-icon error status-pop" />;
