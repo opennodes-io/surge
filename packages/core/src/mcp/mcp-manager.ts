@@ -87,6 +87,46 @@ export interface ToolDefinition {
   };
 }
 
+// Function names providers accept: OpenAI-style APIs take ^[a-zA-Z0-9_-]{1,64}$ and reject the whole
+// request otherwise; Gemini also wants a letter or underscore first, and some of its references say 63
+// characters. Server ids aren't always like that (MCPWeb "mcpweb:https://site", agents "agent:host",
+// catalog slugs with "/" or "."), and MCP tool names may contain dots.
+const WIRE_NAME = /^[a-zA-Z_][a-zA-Z0-9_-]{0,62}$/;
+// A namespace that is a name already: no "__" inside (that's the separator), at most 32 characters.
+const PLAIN_NAMESPACE = /^[a-zA-Z][a-zA-Z0-9-]*(?:_[a-zA-Z0-9-]+)*$/;
+
+/** FNV-1a as 6 base-36 characters: keeps apart ids that slug to the same text. */
+function shortHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+  return ((h >>> 0) % 36 ** 6).toString(36).padStart(6, '0');
+}
+
+/**
+ * How a server id appears in tool names: the id itself when it is a name already (browser, ui,
+ * bookmarks, manual-…, most catalog slugs), else a slug of it plus a hash ("mcpweb-https-example-com-1x2y3z").
+ */
+export function toolNamespace(serverId: string): string {
+  if (serverId.length <= 32 && PLAIN_NAMESPACE.test(serverId)) return serverId;
+  let head = serverId.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+/, '');
+  if (!/^[a-zA-Z]/.test(head)) head = `mcp-${head}`;
+  return `${head.slice(0, 24).replace(/-+$/, '')}-${shortHash(serverId)}`;
+}
+
+/**
+ * The function name a tool is offered to the model under: "namespace__tool", where a tool name that
+ * doesn't fit (dots, length) becomes a slug plus a hash. Unchanged for names that already fit.
+ * McpManager.parseToolName maps it back.
+ */
+export function toolWireName(serverId: string, toolName: string): string {
+  const ns = toolNamespace(serverId);
+  const name = `${ns}__${toolName}`;
+  if (WIRE_NAME.test(name)) return name;
+  const room = 63 - ns.length - 2 - 7; // "__" and "-" + hash
+  const slug = toolName.replace(/[^a-zA-Z0-9_]+/g, '-').slice(0, room).replace(/^-+|-+$/g, '');
+  return `${ns}__${slug ? `${slug}-` : ''}${shortHash(toolName)}`;
+}
+
 export class McpManager {
   private connections: Map<string, { client: Client; transport: any; server: ConnectedServer }> = new Map();
   private virtualServers: Map<string, VirtualServer> = new Map();
@@ -407,8 +447,8 @@ export class McpManager {
         tools.push({
           type: 'function',
           function: {
-            // Namespace: serverId__toolName to avoid collisions
-            name: `${server.id}__${tool.name}`,
+            // Namespace: serverId__toolName to avoid collisions, made a name every provider accepts
+            name: toolWireName(server.id, tool.name),
             description: `[${server.name}] ${tool.description}`,
             parameters: tool.inputSchema || { type: 'object', properties: {} },
           },
@@ -438,14 +478,20 @@ export class McpManager {
     // prompt (~3k tokens a turn, slow on small local models and pricier on paid ones).
     for (const server of servers) {
       const n = server.tools.length;
-      lines.push(`- ${server.name} (${server.id}): ${n} tool${n === 1 ? '' : 's'}`);
+      lines.push(`- ${server.name} (${toolNamespace(server.id)}): ${n} tool${n === 1 ? '' : 's'}`);
     }
 
     return lines.join('\n');
   }
 
-  // Parse a namespaced tool name back to serverId + toolName
+  // Parse a namespaced tool name back to serverId + toolName: a name the model was given (toolWireName),
+  // else a raw "serverId__toolName" or a bare tool name.
   parseToolName(namespacedName: string): { serverId: string; toolName: string } | null {
+    for (const server of this.getConnectedServers()) {
+      if (!namespacedName.startsWith(`${toolNamespace(server.id)}__`)) continue;
+      const tool = server.tools.find(t => toolWireName(server.id, t.name) === namespacedName);
+      if (tool) return { serverId: server.id, toolName: tool.name };
+    }
     const sep = namespacedName.indexOf('__');
     if (sep === -1) {
       // Try to find by tool name alone (first match) across real + virtual servers

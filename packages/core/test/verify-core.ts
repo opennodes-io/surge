@@ -1,8 +1,195 @@
 // Quick verification of the newest core pieces (run via tsx).
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { createClient } from '@libsql/client';
-import { SurgeStore, createBookmarksVirtualServer } from '@surge/core';
-import { McpManager } from '@surge/core/mcp';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { AiService, McpManager, SurgeStore, agentServerId, createBookmarksVirtualServer, runToolLoop, type SettingsPort } from '@surge/core';
 import { detectUiResource } from '@surge/core/ui';
+
+const listen = (server: http.Server): Promise<number> =>
+  new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port)));
+
+const readBody = async (req: http.IncomingMessage) => {
+  let raw = '';
+  for await (const c of req) raw += c;
+  return raw ? JSON.parse(raw) : null;
+};
+
+/**
+ * 6) Tool names providers accept. Tools are named "serverId__toolName", but server ids aren't always
+ * names: MCPWeb sites are "mcpweb:<origin>", per-site agents "agent:<host>", and catalog slugs can carry
+ * "/" or "." or start with a digit; MCP tool names may contain dots. OpenAI-style APIs reject anything
+ * outside ^[a-zA-Z0-9_-]{1,64}$ (a 400 for the whole turn), and Gemini also wants a letter or underscore
+ * first. A real MCPWeb site (in-process MCP server over Streamable HTTP), a mock OpenAI-compatible
+ * model that validates names like OpenAI does, and a mocked Gemini endpoint that validates them like
+ * Gemini does.
+ */
+async function verifyToolNames(): Promise<boolean> {
+  let pass = true;
+  const check = (name: string, cond: boolean, extra = '') => { console.log(`${cond ? '✓' : '✗'} ${name}${extra ? ` — ${extra}` : ''}`); pass = pass && cond; };
+
+  // ── an MCPWeb site: stateless Streamable HTTP, a plain tool and a dotted one ──
+  const siteCalls: Array<{ name: string; args: any }> = [];
+  const site = http.createServer(async (req, res) => {
+    if (req.method !== 'POST') return void res.writeHead(405, { allow: 'POST' }).end();
+    const body = await readBody(req);
+    const mcp = new Server({ name: 'example-site', version: '1.0.0' }, { capabilities: { tools: {} } });
+    mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [
+        { name: 'search', description: 'Search the site', inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] } },
+        { name: 'docs.read', description: 'Read a docs page', inputSchema: { type: 'object', properties: { path: { type: 'string' } } } },
+      ],
+    }));
+    mcp.setRequestHandler(CallToolRequestSchema, async (r) => {
+      siteCalls.push({ name: r.params.name, args: r.params.arguments });
+      return { content: [{ type: 'text', text: `results for ${(r.params.arguments as any)?.q}: Widget, Gadget` }] };
+    });
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on('close', () => { transport.close().catch(() => {}); mcp.close().catch(() => {}); });
+    await mcp.connect(transport);
+    await transport.handleRequest(req, res, body);
+  });
+  const sitePort = await listen(site);
+
+  // ── an OpenAI-compatible model that rejects bad names the way OpenAI does ──
+  const OPENAI_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
+  const model = http.createServer(async (req, res) => {
+    const body = await readBody(req);
+    const names: string[] = (body.tools ?? []).map((t: any) => t.function.name);
+    const bad = names.findIndex((n) => !OPENAI_NAME.test(n));
+    if (bad >= 0) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      return void res.end(JSON.stringify({ error: {
+        message: `Invalid 'tools[${bad}].function.name': string does not match pattern. Expected a string that matches the pattern '^[a-zA-Z0-9_-]+$'.`,
+        type: 'invalid_request_error', param: `tools[${bad}].function.name`, code: 'invalid_value',
+      } }));
+    }
+    // First round: call the site's search tool by the name it was given. Then answer with the result.
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const send = (delta: any, finish: string) => res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+    const last = body.messages.at(-1);
+    if (last.role === 'tool') send({ content: `Found: ${last.content}` }, 'stop');
+    else {
+      const search = body.tools.find((t: any) => t.function.description.startsWith('[Example site] Search'));
+      send({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: search.function.name, arguments: JSON.stringify({ q: 'widgets' }) } }] }, 'tool_calls');
+    }
+    res.end('data: [DONE]\n\n');
+  });
+  const modelPort = await listen(model);
+
+  const settingsStore: Record<string, any> = {
+    'ai.vllmEndpoint': `http://127.0.0.1:${modelPort}`, 'ai.vllmModel': 'mock', 'ai.geminiApiKey': 'test-key',
+    'ai.onpRegistryUrl': 'http://127.0.0.1:9', // never contacted here
+  };
+  const settings: SettingsPort = { get: (k) => settingsStore[k], set: (k, v) => { settingsStore[k] = v; }, getMaxConnections: () => 10 };
+  const mcp = new McpManager(settings);
+  const web = await mcp.connectMcpWeb({
+    supported: true, url: `http://127.0.0.1:${sitePort}/`, connectUrl: `http://127.0.0.1:${sitePort}/mcp`,
+    serverInfo: { name: 'Example site', version: '1.0.0' },
+  });
+  // Ids Surge already uses that make fine names (unchanged), and ones that don't.
+  const plain = (id: string, ...tools: string[]) => mcp.registerVirtualServer({
+    id, name: id, tools: tools.map((name) => ({ name, description: `${name} tool`, inputSchema: { type: 'object', properties: {} }, serverId: id })),
+    callTool: async (toolName: string) => ({ content: [{ type: 'text', text: `${id}/${toolName}` }] }),
+  });
+  plain('browser', 'navigateTo');
+  plain('ui', 'render');
+  plain('manual-1760000000000', 'echo');
+  plain('github', 'create_issue');
+  plain(agentServerId('shop.example.com'), 'find_products');
+  plain('io.github.acme/weather', 'get_forecast');
+  plain('21st-dev-magic', 'component');
+  plain('a-rather-long-catalog-slug-for-a-reporting-server', 'get_the_extremely_detailed_quarterly_report');
+
+  const defs = mcp.getToolDefinitions();
+  const names = defs.map((d) => d.function.name);
+  const WIRE = /^[a-zA-Z_][a-zA-Z0-9_-]{0,62}$/; // OpenAI's rule, and Gemini's (a letter or _ first, ≤ 63 in some docs)
+  console.log('  tool names sent:', names.join(', '));
+  const badNames = names.filter((n) => !WIRE.test(n));
+  check('every tool name is one OpenAI and Gemini accept', badNames.length === 0, badNames.join(', '));
+  check('tool names are unique', new Set(names).size === names.length);
+  check('names that were already fine are unchanged',
+    ['browser__navigateTo', 'ui__render', 'manual-1760000000000__echo', 'github__create_issue'].every((n) => names.includes(n)));
+
+  // Every name the model is given routes back to its server and tool (the order matches getConnectedServers).
+  const expected = mcp.getConnectedServers().flatMap((s) => s.tools.map((t) => ({ serverId: s.id, toolName: t.name })));
+  const misrouted = defs.filter((d, i) => {
+    const p = mcp.parseToolName(d.function.name);
+    return p?.serverId !== expected[i].serverId || p?.toolName !== expected[i].toolName;
+  });
+  check('every tool name parses back to its server and tool', misrouted.length === 0, misrouted.map((d) => d.function.name).join(', '));
+  const dotted = mcp.parseToolName(names.find((n) => mcp.parseToolName(n)?.toolName === 'docs.read') ?? '');
+  check('a dotted MCP tool name keeps its dots for the server', dotted?.serverId === web.id && dotted?.toolName === 'docs.read');
+  const raw = mcp.parseToolName(`${web.id}__search`);
+  check('a raw "serverId__tool" still parses (a prompt-based model copying an id)', raw?.serverId === web.id && raw?.toolName === 'search');
+  const searchName = names.find((n) => mcp.parseToolName(n)?.toolName === 'search' && mcp.parseToolName(n)?.serverId === web.id) ?? '';
+  const ns = searchName.slice(0, searchName.lastIndexOf('__search'));
+  check('the system prompt shows the server as it appears in tool names', mcp.getSystemPrompt().includes(`- Example site (${ns}):`), ns);
+
+  // ── a chat turn while the MCPWeb site is connected (what ai:streamChat does) ──
+  const ai = new AiService(settings);
+  const toolLabels = (n: string) => {
+    const p = mcp.parseToolName(n);
+    return { serverId: p?.serverId, serverName: mcp.getConnectedServers().find((s) => s.id === p?.serverId)?.name, toolName: p?.toolName };
+  };
+  let text = '';
+  let error = '';
+  const labels: any[] = [];
+  await runToolLoop({
+    ai, model: 'vllm-custom', conversation: [{ role: 'user', content: 'find widgets on this site' }],
+    toolDefs: () => mcp.getToolDefinitions(),
+    executeTool: async (tc) => {
+      const p = mcp.parseToolName(tc.functionName);
+      if (!p) return { resultText: `Error: Unknown tool "${tc.functionName}".` };
+      const r = await mcp.callTool(p.serverId, p.toolName, tc.arguments);
+      return { resultText: r.content.map((c: any) => c.text).join('\n'), serverId: p.serverId };
+    },
+    callbacks: {
+      onToken: (t) => { text += t; }, onToolCallStart: (i) => labels.push(toolLabels(i.name)), onToolCallResult: () => {},
+      onEnd: () => {}, onError: (m) => { error = m; },
+    },
+  });
+  check('a chat turn with an MCPWeb site connected succeeds', !error, error);
+  check('the model\'s call reaches the site\'s tool', siteCalls.length === 1 && siteCalls[0].name === 'search' && siteCalls[0].args?.q === 'widgets', JSON.stringify(siteCalls));
+  check('the answer carries the tool result', text.includes('Widget, Gadget'), JSON.stringify(text));
+  check('the chat\'s tool label names the site and the bare tool',
+    labels[0]?.serverId === web.id && labels[0]?.serverName === 'Example site' && labels[0]?.toolName === 'search', JSON.stringify(labels[0]));
+
+  // ── Gemini: the same names, checked against Gemini's rule ──
+  const realFetch = globalThis.fetch;
+  let geminiNames: string[] = [];
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = String(input?.url ?? input);
+    if (!url.startsWith('https://generativelanguage.googleapis.com/')) return realFetch(input, init);
+    const body = JSON.parse(init.body);
+    geminiNames = (body.tools?.[0]?.functionDeclarations ?? []).map((f: any) => f.name);
+    if (geminiNames.some((n) => !/^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$/.test(n))) {
+      return new Response(JSON.stringify({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Invalid function name. Must start with a letter or an underscore. Must be alphameric (a-z, A-Z, 0-9), underscores (_), dots (.), colons (:), or dashes (-), with a maximum length of 64.' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+    }
+    const chunk = { candidates: [{ index: 0, content: { role: 'model', parts: [{ text: 'gemini ok' }] }, finishReason: 'STOP' }] };
+    return new Response(`data: ${JSON.stringify(chunk)}\r\n\r\n`, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }) as typeof fetch;
+  let geminiText = '';
+  let geminiError = '';
+  try {
+    await ai.streamChat([{ role: 'user', content: 'hello' }], 'gemini-flash-lite',
+      { onToken: (t) => { geminiText += t; }, onEnd: () => {}, onError: (m) => { geminiError = m; } }, mcp.getToolDefinitions());
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  check('Gemini gets the same tool names and answers', !geminiError && geminiText === 'gemini ok' && geminiNames.length === names.length, geminiError);
+
+  await mcp.disconnectMcpWeb(`http://127.0.0.1:${sitePort}/`);
+  check('a disconnected site\'s tools are gone', !mcp.getToolDefinitions().some((d) => mcp.parseToolName(d.function.name)?.serverId === web.id));
+  // Drop keep-alive connections and wait for the close: exiting while handles close aborts Node on Windows.
+  for (const s of [site, model]) {
+    s.closeAllConnections();
+    await new Promise((resolve) => s.close(resolve));
+  }
+  return pass;
+}
 
 async function main() {
   // 1) in-process bookmarks virtual server dispatches to the store
@@ -85,8 +272,11 @@ async function main() {
     writes.length === writesBefore;
   if (!dedupeOk) console.log('dedupe detail:', { tidied, afterSameUrl, afterNew, twinIsLive: twin === live, extraWrites: writes.length - writesBefore });
 
+  // 6) tool names providers accept (see verifyToolNames)
+  const toolNamesOk = await verifyToolNames();
+
   const pass =
-    historyOk && migratedOk && dedupeOk &&
+    historyOk && migratedOk && dedupeOk && toolNamesOk &&
     addObj.url === 'https://x.com' && addObj.tags.length === 1 &&
     list.length === 1 &&
     uiHtml?.kind === 'html' && uiHtml.uiType === 'mcp-ui' &&
@@ -98,6 +288,7 @@ async function main() {
   console.log('ui html:', uiHtml?.kind, '| ui tmpl:', uiTmpl?.uiType, '| ui url:', uiUrl?.url, '| none:', none);
   console.log('chat history:', historyOk ? 'ok' : 'FAIL', '| old db migrated:', migratedOk ? 'ok' : 'FAIL');
   console.log('saved MCP servers deduped (startup, same URL, live twin):', dedupeOk ? 'ok' : 'FAIL');
+  console.log('provider-safe tool names:', toolNamesOk ? 'ok' : 'FAIL');
   console.log(pass ? '\n✅ CORE VERIFY PASSED' : '\n❌ CORE VERIFY FAILED');
   process.exit(pass ? 0 : 1);
 }

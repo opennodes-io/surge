@@ -4,7 +4,7 @@ import { app, ipcMain } from 'electron';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import type { McpManager } from '@surge/core';
+import { toolWireName, type McpManager } from '@surge/core';
 import type { SettingsService } from './settings-service';
 import type { SecretStore } from './secret-store';
 
@@ -83,7 +83,7 @@ export class SurgeHub {
     for (const server of this.mcp.getConnectedServers()) {
       if (!EXPOSED_SERVERS.includes(server.id) || server.status !== 'connected') continue;
       for (const tool of server.tools) {
-        const name = `${server.id}__${tool.name}`;
+        const name = toolWireName(server.id, tool.name);
         if (!this.allowActions && !READ_ONLY_TOOLS.has(name)) continue;
         out.push({ name, description: `[Surge ${server.name}] ${tool.description}`, inputSchema: tool.inputSchema || { type: 'object', properties: {} } });
       }

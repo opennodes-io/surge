@@ -14,7 +14,7 @@ const tsx = requireFromServer.resolve('tsx/cli');
 const tsup = path.join(path.dirname(requireFromServer.resolve('tsup/package.json')), 'dist/cli-default.js');
 
 const tests = [
-  ['packages/core', 'test/verify-core.ts', 'storage, bookmarks MCP server, MCP-UI detection'],
+  ['packages/core', 'test/verify-core.ts', 'storage, bookmarks MCP server, MCP-UI detection, provider-safe tool names'],
   ['packages/core', 'test/verify-agents.ts', 'per-site agents: declarative runtime, sanitizer, code sandbox'],
   ['packages/core', 'test/verify-onp-invocation.ts', 'OpenNodes: pins, 409 handling, receipts, spend policy, Auto'],
   ['packages/core', 'test/verify-keys-spend-private.ts', 'per-host keys, spend ledger, private mode'],
