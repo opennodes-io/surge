@@ -7,10 +7,16 @@
 //   node scripts/launch-kit/capture.mjs            # demo (GIF + MP4) and stills
 //   node scripts/launch-kit/capture.mjs --stills   # stills only
 //   node scripts/launch-kit/capture.mjs --demo     # demo only
+//   node scripts/launch-kit/capture.mjs --hero     # the browser + receipt still only
+//   … --node=io.opennodes.helsinki                 # answer with that node instead of Auto
 //
 // Needs Node >= 22 (global WebSocket), ffmpeg on PATH (or FFMPEG=/path/to/ffmpeg), network access,
 // and a local Ollama for the private-mode scenes (skipped when it isn't running). The app runs in
 // a throwaway --user-data-dir, so your own settings, keys and history are never touched.
+//
+// Every OpenNodes reply the stills show must come from a verified (or attested), key-less node the
+// registry lists right now; otherwise the run fails rather than publish a delisted node's receipt.
+// Without saved keys, Auto's pool is the admitted nodes only, so imported listings can't be picked.
 import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -24,8 +30,11 @@ const OUT = path.join(ROOT, 'docs/launch-kit/media');
 const FFMPEG = process.env.FFMPEG || 'ffmpeg';
 const PORT = Number(process.env.CDP_PORT || 9334);
 const flags = new Set(process.argv.slice(2));
-const WANT_DEMO = !flags.has('--stills');
+const HERO_ONLY = flags.has('--hero');
+const WANT_DEMO = !flags.has('--stills') && !HERO_ONLY;
 const WANT_STILLS = !flags.has('--demo');
+const NODE = process.argv.find((a) => a.startsWith('--node='))?.slice('--node='.length) || null;
+const REGISTRY = 'https://registry.opennodes.io';
 const WAIT_MAX_S = 1.4;   // a model wait is compressed to at most this in the demo
 const HOLD_END_S = 3;
 
@@ -125,6 +134,15 @@ const PAGE_HELPERS = String.raw`window.__kit = {
     if (level) { this.byText('.model-level-header', level)?.click(); await this.sleep(600); }
   },
   async pick(name) { this.byText('.model-option', name).click(); await this.sleep(500); },
+  // Auto, or the node given with --node (its picker row names the node id).
+  async pickOnp(node) { await this.openPicker('Smart'); await this.pick(node || 'Auto (OpenNodes'); },
+  // The latest OpenNodes call: the node that served it (the span after the tier), and why Auto chose it.
+  lastCall() {
+    const el = [...document.querySelectorAll('.onp-call')].pop();
+    const spans = el ? [...el.children].filter((s) => !s.classList.contains('onp-advisor')) : [];
+    return { node: spans[1]?.textContent ?? '', text: el?.textContent ?? '', why: el?.querySelector('.onp-advisor')?.title ?? '' };
+  },
+  toolCalls() { return [...document.querySelectorAll('.tcb-header')].map((h) => h.textContent.trim().replace(/\s+/g, ' ')); },
   async settings(tab) {
     if (!document.querySelector('.settings-panel')) { document.querySelector('button[title="Settings"]').click(); await this.sleep(700); }
     this.byText('.settings-tab', tab).click();
@@ -158,6 +176,20 @@ async function quitApp({ child, profile }) {
 const ollamaUp = async () => {
   try { return (await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(3000) })).ok; } catch { return false; }
 };
+
+// Nodes a published still may show: listed now, verified or attested, free (so no key is needed).
+async function liveNodes() {
+  const r = await fetch(`${REGISTRY}/v0/offerings?tier=verified&limit=100`, { signal: AbortSignal.timeout(15_000) });
+  const { offerings } = await r.json();
+  return new Set(offerings.filter((o) => o.invocable !== false && o.pricing?.schemes?.includes('free')).map((o) => o.node_id));
+}
+
+async function checkServedBy(app, allowed) {
+  const { node, text, why } = await app.eval(`__kit.lastCall()`);
+  if (!allowed.has(node)) throw new Error(`the reply wasn't served by a live verified node: "${text}" (allowed: ${[...allowed].join(', ')})`);
+  if (!text.includes('✓')) log('warning: receipt is not verified —', text);
+  log('served by', node, '—', text, why ? `\n  ${why.replace(/\n/g, '\n  ')}` : '');
+}
 
 function ffmpeg(args) {
   const r = spawnSync(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-y', ...args], { stdio: 'inherit' });
@@ -282,10 +314,14 @@ async function still(app, name, web = null) {
 // ── the run ────────────────────────────────────────────────────────
 const AUTO_PROMPT = 'In two sentences: what does a signed usage receipt prove to the person who paid?';
 const PRIVATE_PROMPT = 'Summarize privately in one sentence: our Q3 revenue grew 12% and churn fell to 3%.';
-const PAGE_PROMPT = 'In one sentence, what does this page say OpenNodes is?';
+const PAGE_PROMPT = 'Read this page, then tell me in one sentence what it says OpenNodes is.';
 
 async function main() {
   fs.mkdirSync(OUT, { recursive: true });
+  const allowed = await liveNodes();
+  if (!allowed.size) throw new Error(`${REGISTRY} lists no free verified node`);
+  if (NODE && !allowed.has(NODE)) throw new Error(`--node=${NODE} is not a live, free, verified node (${[...allowed].join(', ')})`);
+  log('live verified nodes:', [...allowed].join(', '), NODE ? `· pinned ${NODE}` : '· Auto');
   const proc = launchApp();
   let app;
   try {
@@ -306,6 +342,7 @@ async function main() {
         await app.eval(`__kit.pick('Auto (OpenNodes')`);
         await app.eval(`__kit.type(${JSON.stringify(AUTO_PROMPT)})`);
         await wait(() => app.waitFor(replyAfter(0)));
+        await checkServedBy(app, allowed);
         await sleep(3500);
         await park(app); // a resize re-sends the real pointer position: park right before the chart renders
         await app.eval(`__kit.settings('Spend')`);
@@ -328,10 +365,10 @@ async function main() {
 
     if (WANT_STILLS) {
       log('stills…');
-      if (privateOk) {
+      if (privateOk && !HERO_ONLY) {
         if (!(await app.eval(`!!document.querySelector('.private-btn.active')`))) {
           if (!(await app.eval(`!!document.querySelector('.onp-call')`))) {
-            await app.eval(`__kit.openPicker('Smart').then(() => __kit.pick('Auto (OpenNodes'))`);
+            await app.eval(`__kit.pickOnp(${JSON.stringify(NODE)})`);
             await app.eval(`__kit.type(${JSON.stringify(AUTO_PROMPT)})`);
             await app.waitFor(replyAfter(0));
           }
@@ -348,20 +385,26 @@ async function main() {
       }
 
       // Hero: a page in the embedded browser, read with an MCP tool, answered by an OpenNodes node
-      // the advisor picked, with its verified receipt under the reply.
+      // the advisor picked (or --node), with its verified receipt under the reply.
       await app.eval(`__kit.newChat()`);
       await app.eval(`window.surge.window.resize('expanded'), true`);
       await sleep(800);
-      await app.eval(`__kit.openPicker('Smart').then(() => __kit.pick('Auto (OpenNodes'))`);
+      await app.eval(`__kit.pickOnp(${JSON.stringify(NODE)})`);
       await app.eval(`__kit.type('opennodes.io')`);
       await sleep(7000);
       await app.eval(`__kit.type(${JSON.stringify(PAGE_PROMPT)})`);
       await app.waitFor(replyAfter(0));
+      await checkServedBy(app, allowed);
+      const tools = await app.eval(`__kit.toolCalls()`);
+      log('tool calls:', tools.join(' · ') || 'none (answered from the page title only)');
       await app.eval(`[...document.querySelectorAll('.chat-message.user')].pop().scrollIntoView({ block: 'start' }), true`);
       await sleep(1500);
-      const web = await Cdp.connect((u) => u.startsWith('https://opennodes.io'), 10_000);
+      // A small model sometimes navigates elsewhere with a tool; that take can't be the hero shot.
+      const web = await Cdp.connect((u) => u.startsWith('https://opennodes.io'), 10_000)
+        .catch(() => { throw new Error(`the page left opennodes.io (tool calls: ${tools.join(' · ')}); run again`); });
       await still(app, 'surge-browser-receipt', web);
       web.close();
+      if (HERO_ONLY) return;
 
       await app.eval(`window.surge.browser.hide(), true`);
       await app.eval(`__kit.settings('Spend')`);

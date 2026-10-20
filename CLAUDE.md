@@ -122,7 +122,7 @@ Verification scripts for the ONP integration:
   - Verified with the mock script and once against the live `demo-node.opennodes.io` using a deliberately stale pin.
   - The re-resolved card must pass the ONP-2 schema and verify against the node's JWKS, and `card.node.id` must match; otherwise the 409 is surfaced ("could not be verified").
 - **Auto (advisor)** — `onp:auto`, listed first among ONP models (`onp/onp-advisor.ts`, `AiService.createCompletion`):
-  - Pool: the registry's admitted nodes (`tier=community` search, 3 today). They serve without an API key; imported listings don't.
+  - Pool: the registry's admitted nodes (`tier=community` search; 2 today, `io.opennodes.helsinki` gemma3:1b and `io.opennodes.demo-node` llama3.2:1b, both verified; `io.opennodes.lab` was delisted). They serve without an API key; imported listings don't.
   - `extractFeatures` runs on the latest user turn, and `recommend` ranks on this device within the policy's tier and price cap.
   - Each pick still goes through the full policy check. The next pick is tried when one is blocked or fails before its response starts, which matters because the lab node is often offline.
   - The `OnpCallRecord.advisor` field (task class, score, reasons, skipped picks) shows as an "auto · chat → model (reason)" line.
@@ -181,7 +181,9 @@ Verification scripts for the ONP integration:
   - basis fields are ignored: `hardware.basis`, `context_capped_from`, `data_policy` (`auto-private` will need that last one)
   - spend is per device. Calls the user didn't make through `AiService` (e.g. the gateway) aren't counted.
 - `OnpTier` includes `attested` / `local` / `lan`. `verified` and `attested` map to the Smart level.
+- **Fixed 2026-10-20: one listing emptied the picker.** The registry now lists imported models it can't invoke (`invocable: false`, only `endpoints.docs`, e.g. `import.modelsdev.cohere/*`). `hostOf` threw `Invalid URL` on their empty endpoint inside `refreshOnpModels`, whose catch kept nothing, so every ONP model and Auto vanished (released 0.1.7 included). `OnpRegistryClient.searchOfferings` now drops offerings without an http(s) endpoint (`isInvocableOffering`); `verify-onp-invocation.ts` lists one.
 - **Bugs (open):**
+  - *ONP models without native tools.* Only private / vLLM / Ollama Local fall back to prompt-based tools. `io.opennodes.helsinki` (gemma3:1b, `supports: [streaming]`) answers `502 (no body)` whenever tools are sent, so every chat turn with tools skips it ("1 skipped" under Auto) and it's unusable when picked directly. Listing it as "tools via prompt" from `supports` lacking `tool_calls` would fix it.
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Heavy prompts.* With a page open, the chat sends every browser + bookmarks tool definition each turn (~3.2k prompt tokens). Without a page, the browser server offers only `navigateTo`. `ui__render` (~900 tokens, 3.2k of a no-page turn's 5.1k characters of tools) goes only to turns that look like they need it (Live UI's "When it helps"). This is slow on small CPU nodes and inflates paid ceilings.
 - **Actions ask first** (added 2026-10-16; `orchestrator/approvals.ts`, `ApprovalCard.tsx`).
@@ -296,7 +298,7 @@ Verification scripts for the ONP integration:
   - *Browser tool hang.* `BrowserService.executeTool` answers "No page is open…" when the view never loaded a page; there, `executeJavaScript` never settles. Every tool also has a ceiling of max(15s, timeoutMs + 5s).
   - *Tool-call header.* The IPC event `mcp:toolCall` now carries `serverId` / `serverName` / `toolName`.
 - **Launch kit:** `docs/launch-kit/` holds the copy, the landing-page snippet, announcement drafts, a fact sheet of allowed claims, and `media/`.
-  - `scripts/launch-kit/capture.mjs` regenerates `media/` from the real built app over CDP (needs ffmpeg).
+  - `scripts/launch-kit/capture.mjs` regenerates `media/` from the real built app over CDP (needs ffmpeg). `--hero` shoots only the browser + receipt still, `--node=<id>` answers with that node instead of Auto, and a run fails unless every reply shown came from a node the registry lists now as verified and free. The hero still was re-captured 2026-10-20 (demo-node) and copied to the opennodes site.
   - The demo is recorded with `Page.startScreencast`, with model waits compressed. Stills are taken at 2× via `Emulation.setDeviceMetricsOverride`, dark and light. The browser shot stitches the app view and the embedded page.
   - Window capture with ffmpeg `gdigrab` returns black frames for this GPU-composited window, which is why the script uses CDP. The window title is `@surge/desktop`.
   - **Capture gotchas:**
