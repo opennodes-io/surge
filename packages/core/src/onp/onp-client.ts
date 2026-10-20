@@ -6,7 +6,7 @@
 // Registry API: https://github.com/opennodes-io/opennodes (ONP-3).
 import { OnpClient } from '@opennodes/cli';
 import {
-  ONP_DEFAULT_REGISTRY, ONP_FETCH_TIMEOUT_MS, normalizeOffering, normalizePricing,
+  ONP_DEFAULT_REGISTRY, ONP_FETCH_TIMEOUT_MS, isInvocableOffering, normalizeOffering, normalizePricing,
   type OnpOffering, type OnpPricing,
 } from './onp-offerings.js';
 
@@ -61,7 +61,7 @@ export class OnpRegistryClient {
     p.sort = query.sort ?? 'rank';
     p.limit = String(query.limit ?? 50);
     const offerings = await withTimeout(this.client.search(p), 'ONP registry search');
-    return (offerings ?? []).map(normalizeOffering);
+    return (offerings ?? []).map(normalizeOffering).filter(isInvocableOffering);
   }
 
   /** Pre-price an invocation chain; the returned card_revisions make the estimate enforceable. */

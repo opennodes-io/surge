@@ -14,6 +14,7 @@
 //  9. the 409 path re-resolves through @opennodes/cli: a card that fails ONP-2 signature
 //     verification is surfaced, never trusted
 // 10. Auto (advisor): ranks the admitted pool locally, falls back past a pick that fails, records why
+// 11. a listed offering the registry can't invoke (no endpoint) is skipped instead of emptying the list
 // Run: pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-onp-invocation.ts
 import http from 'node:http';
 import { randomUUID, sign, type KeyObject } from 'node:crypto';
@@ -177,6 +178,11 @@ async function main() {
         card_revision: rev(1), model: { name: 'Big', params_b: 70 }, binding: { model_id: 'big' },
         pricing: price(0, 0), serving: { supports: ['streaming'] }, observed: { probe_success: 1, ttft_ms: { p50: 90 } },
         endpoints: { openai: `${deadBase}/v1` },
+      }, {
+        // An imported listing the registry can't invoke: no OpenAI endpoint, only a docs link.
+        node_id: 'import.test.docs', offering_id: 'docs-only', tier: 'unverified', source: 'import', modality: 'text',
+        invocable: false, model: { name: 'Docs only' }, binding: { model_id: 'docs-only' },
+        pricing: price(0, 0), serving: { supports: [] }, endpoints: { docs: 'https://docs.example.com/models' },
       }].filter((o) => !minTier || TIERS.indexOf(o.tier) >= TIERS.indexOf(minTier));
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ total: offerings.length, offerings }));
@@ -212,6 +218,7 @@ async function main() {
   const models = await ai.listModels();
   const echo = models.find((m) => m.id === MODEL);
   check('attested offering is listed at the Smart level', echo?.level === 'smart', `${echo?.description} · ${echo?.costEstimate}`);
+  check('a listing with no endpoint is skipped, not fatal to the list', !!echo && !models.some((m) => m.id.includes('docs-only')));
 
   // 1) per-request pins + an inline receipt
   let r = await send('one');
