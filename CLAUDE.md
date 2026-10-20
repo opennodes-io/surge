@@ -122,7 +122,7 @@ Verification scripts for the ONP integration:
   - Verified with the mock script and once against the live `demo-node.opennodes.io` using a deliberately stale pin.
   - The re-resolved card must pass the ONP-2 schema and verify against the node's JWKS, and `card.node.id` must match; otherwise the 409 is surfaced ("could not be verified").
 - **Auto (advisor)** — `onp:auto`, listed first among ONP models (`onp/onp-advisor.ts`, `AiService.createCompletion`):
-  - Pool: the registry's admitted nodes (`tier=community` search, 3 today). They serve without an API key; imported listings don't.
+  - Pool: the registry's admitted nodes (`tier=community` search; 2 today, `io.opennodes.helsinki` gemma3:1b and `io.opennodes.demo-node` llama3.2:1b, both verified; `io.opennodes.lab` was delisted). They serve without an API key; imported listings don't.
   - `extractFeatures` runs on the latest user turn, and `recommend` ranks on this device within the policy's tier and price cap.
   - Each pick still goes through the full policy check. The next pick is tried when one is blocked or fails before its response starts, which matters because the lab node is often offline.
   - The `OnpCallRecord.advisor` field (task class, score, reasons, skipped picks) shows as an "auto · chat → model (reason)" line.
@@ -181,7 +181,9 @@ Verification scripts for the ONP integration:
   - basis fields are ignored: `hardware.basis`, `context_capped_from`, `data_policy` (`auto-private` will need that last one)
   - spend is per device. Calls the user didn't make through `AiService` (e.g. the gateway) aren't counted.
 - `OnpTier` includes `attested` / `local` / `lan`. `verified` and `attested` map to the Smart level.
+- **Fixed 2026-10-20: one listing emptied the picker.** The registry now lists imported models it can't invoke (`invocable: false`, only `endpoints.docs`, e.g. `import.modelsdev.cohere/*`). `hostOf` threw `Invalid URL` on their empty endpoint inside `refreshOnpModels`, whose catch kept nothing, so every ONP model and Auto vanished (released 0.1.7 included). `OnpRegistryClient.searchOfferings` now drops offerings without an http(s) endpoint (`isInvocableOffering`); `verify-onp-invocation.ts` lists one.
 - **Bugs (open):**
+  - *ONP models without native tools.* Only private / vLLM / Ollama Local fall back to prompt-based tools. `io.opennodes.helsinki` (gemma3:1b, `supports: [streaming]`) answers `502 (no body)` whenever tools are sent, so every chat turn with tools skips it ("1 skipped" under Auto) and it's unusable when picked directly. Listing it as "tools via prompt" from `supports` lacking `tool_calls` would fix it.
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Heavy prompts.* With a page open, the chat sends every browser + bookmarks tool definition each turn (~3.2k prompt tokens). Without a page, the browser server offers only `navigateTo`. `ui__render` (~900 tokens, 3.2k of a no-page turn's 5.1k characters of tools) goes only to turns that look like they need it (Live UI's "When it helps"). This is slow on small CPU nodes and inflates paid ceilings.
 - **Actions ask first** (added 2026-10-16; `orchestrator/approvals.ts`, `ApprovalCard.tsx`).
@@ -296,7 +298,7 @@ Verification scripts for the ONP integration:
   - *Browser tool hang.* `BrowserService.executeTool` answers "No page is open…" when the view never loaded a page; there, `executeJavaScript` never settles. Every tool also has a ceiling of max(15s, timeoutMs + 5s).
   - *Tool-call header.* The IPC event `mcp:toolCall` now carries `serverId` / `serverName` / `toolName`.
 - **Launch kit:** `docs/launch-kit/` holds the copy, the landing-page snippet, announcement drafts, a fact sheet of allowed claims, and `media/`.
-  - `scripts/launch-kit/capture.mjs` regenerates `media/` from the real built app over CDP (needs ffmpeg).
+  - `scripts/launch-kit/capture.mjs` regenerates `media/` from the real built app over CDP (needs ffmpeg). `--hero` shoots only the browser + receipt still, `--node=<id>` answers with that node instead of Auto, and a run fails unless every reply shown came from a node the registry lists now as verified and free. The hero still was re-captured 2026-10-20 (demo-node) and copied to the opennodes site.
   - The demo is recorded with `Page.startScreencast`, with model waits compressed. Stills are taken at 2× via `Emulation.setDeviceMetricsOverride`, dark and light. The browser shot stitches the app view and the embedded page.
   - Window capture with ffmpeg `gdigrab` returns black frames for this GPU-composited window, which is why the script uses CDP. The window title is `@surge/desktop`.
   - **Capture gotchas:**
@@ -304,7 +306,7 @@ Verification scripts for the ONP integration:
     - Screencast frames lag behind acks while animations play. Place them by their render timestamp, shifted onto `Date.now()` by the smallest delivery delay, and drain the backlog before stopping.
     - Make the GIF from the MP4: fed the variable-duration concat directly, ffmpeg played every hold too short.
     - Park a synthetic pointer (`Input.dispatchMouseEvent`) before scenes, because the real pointer's hover state leaks into frames.
-- **Windows installer** (electron-builder 26, NSIS; `apps/desktop/electron-builder.yml`), built and verified 2026-10-07. **Released: Surge 0.1.1** (2026-10-07), **0.1.2** (2026-10-08), **0.1.3** (2026-10-09, adds Live UI), **0.1.4** (2026-10-10, Live UI phase 2), **0.1.5** (2026-10-11, private mode tools fix) and **0.1.6** (2026-10-16, latest, sandbox escape, saved-server and tool-name fixes), GitHub pre-releases with an unsigned installer, from `release.yml`. The README and the OpenNodes surfaces link [Releases](https://github.com/opennodes-io/surge/releases); the links point at the page, not a version, so they don't go stale.
+- **Windows installer** (electron-builder 26, NSIS; `apps/desktop/electron-builder.yml`), built and verified 2026-10-07. **Released: Surge 0.1.1** (2026-10-07), **0.1.2** (2026-10-08), **0.1.3** (2026-10-09, adds Live UI), **0.1.4** (2026-10-10, Live UI phase 2), **0.1.5** (2026-10-11, private mode tools fix), **0.1.6** (2026-10-16, sandbox escape, saved-server and tool-name fixes) and **0.1.7** (2026-10-16, latest, actions ask first), GitHub pre-releases with an unsigned installer, from `release.yml`. The README and the OpenNodes surfaces link [Releases](https://github.com/opennodes-io/surge/releases); the links point at the page, not a version, so they don't go stale.
   - Identity: product name "Surge", version 0.1.7, appId `io.opennodes.surge`. One-click per-user install into `%LOCALAPPDATA%\Programs\surge`, which comes from `extraMetadata.name`; otherwise the folder name comes from `@surge/desktop`. 88 MB. `publish: null`, so releases are never uploaded as a side effect of a build.
   - Data: the installed app uses `%APPDATA%\Surge`. On this machine that's the same folder as an old March 2026 "surge" build's settings (Windows paths are case-insensitive), so the installed app inherits them. Unpackaged runs use `%APPDATA%\Surge Dev` unless `--user-data-dir` is given (`main.ts`), so dev never migrates the installed app's `surge.db`.
   - The main process takes a single-instance lock: a second launch focuses the window. The window and tray icons load from `resources/`, rendered from `packaging/icon.svg` by `electron packaging/render-icons.cjs`.
@@ -336,8 +338,8 @@ Verification scripts for the ONP integration:
 
 ## What a good next session does
 
-1. **Installers.** Surge 0.1.6 for Windows is the latest published release (see "Windows installer" above).
-   - Each release: bump `apps/desktop` `version` in a PR, merge, push `v<version>`, then review and publish the draft (CONTRIBUTING.md). Publishing is the user's call. Check that it actually published: `gh api repos/opennodes-io/surge/releases` shows `draft=false`. A `v0.1.0` draft, built before the browser-mode fixes, was never published. It and its tag were deleted, so `v0.1.1` through `v0.1.6` are the only tags and releases.
+1. **Installers.** Surge 0.1.7 for Windows is the latest published release (see "Windows installer" above).
+   - Each release: bump `apps/desktop` `version` in a PR, merge, push `v<version>`, then review and publish the draft (CONTRIBUTING.md). Publishing is the user's call. Check that it actually published: `gh api repos/opennodes-io/surge/releases` shows `draft=false`. A `v0.1.0` draft, built before the browser-mode fixes, was never published. It and its tag were deleted, so `v0.1.1` through `v0.1.7` are the only tags and releases.
    - Code signing is the user's decision (a certificate or Azure Trusted Signing). Unsigned, SmartScreen warns about an unknown publisher.
    - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
