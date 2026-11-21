@@ -15,15 +15,17 @@ Surge is a desktop "browser for MCP" **and the reference desktop client for Open
   - **On `409 price_changed`: re-fetch the card, re-apply the user's spend policy, then retry once or surface** (ONP-4).
   - Receipts arrive in the `ONP-Receipt` response header, inline JWS **or a URL**. Streaming responses carry the URL, which is materialized after the stream ends. Verify the node's JWS (`/.well-known/jwks.json`), `amount = usage × pinned price`, and `card_revision` = the pinned one. With the OpenAI SDK, use `.withResponse()` to read headers.
   - **Enforce a user-configured spend policy before invocation**: max price per MTok, per-request ceiling (`max_tokens` × pinned price), per-day budget, allowed schemes, minimum tier (ONP-5).
-  - Tiers: `unverified / community / verified / attested` (+ `disputed`, `suspended`). `@opennodes/core` ≥0.1.1 adds client-side `local` / `lan` tiers (your own machines, fully trusted).
+  - Tiers: `unverified / community / verified / attested` (+ `disputed`, `suspended`). `@opennodes/core` ≥0.1.1 adds client-side `local` / `lan` tiers (your own machines). Since 0.1.24 a `lan` offering counts as your own network only with `lan.pinned: true`; unpinned, it ranks as `unverified`.
   - Claimed vs measured vs attested values are never blended — show the basis (`hardware.basis`, `observed.*`, `serving.context_capped_from`).
   - `POST /v0/recommend` accepts `features` only, so the prompt never leaves the machine.
   - Credentials are per upstream **hostname** (the gateway's `keys` map). Never send one key to every node: registration is open.
 - Spec: `spec/ONP-1..6` in the opennodes repo (still the full set as of 2026-10-06). Composite Nodes (ONP-7) and Node Performance Reports are planned there; Surge should be the first client to surface them when they land.
 
-### Using the published packages (adopted 2026-10-06: `@opennodes/core` 0.1.1, `@opennodes/cli` 0.1.2)
+### Using the published packages (adopted 2026-10-06; since 2026-11-21 `@opennodes/core` 0.1.24, `@opennodes/cli` 0.1.33)
 
 Both are dependencies of `@surge/core` **and** `apps/desktop`; the desktop entry is what keeps electron-vite from bundling them.
+
+**Pinned exactly, all three together.** `@opennodes/ollama-router` pins its core and cli to exact versions, so Surge pins the same ones (no caret). Otherwise a newer core would be installed beside the router's, a nested copy that the hoisted layout and `check-node-modules.cjs` handle badly. Bump the three as a set, then check that `node_modules` holds one copy of each.
 
 **What Surge uses**
 - `OnpClient`: search, estimate, and `resolveCard` (ONP-2 schema validation plus card-signature verification).
@@ -43,8 +45,15 @@ Both are dependencies of `@surge/core` **and** `apps/desktop`; the desktop entry
 - **No timeouts in `OnpClient`.** Its fetches take no `AbortSignal`, so `onp-client.ts` races each call against an 8s timeout and the request finishes in the background.
 - **Don't route chat through `OnpClient.invoke`.** It doesn't stream and drops tools (it sends only `{model, messages, max_tokens}`).
 
-**`@opennodes/ollama-router` 0.1.2** is a desktop-only dependency (it starts an HTTP server, so it never goes in core).
-- Private mode starts it in the main process (`apps/desktop/src/main/services/private-router.ts`) on a free loopback port with `registry: null`, so only the local Ollama and LAN peers are served.
+**`@opennodes/ollama-router` 0.1.27** (0.1.2 until 2026-11-21) is a desktop-only dependency (it starts an HTTP server, so it never goes in core).
+- Private mode starts it in the main process (`apps/desktop/src/main/services/private-router.ts`) on a free loopback port with `registry: null`, so only the local Ollama and LAN peers are served. The library keeps no files: no ledger, no reputation file, and a new token each run.
+- **Who may call it** (the router's `access.js`, OpenNodes spec revision 10; 0.1.2 predates it, with wildcard CORS and no token):
+  - `/router/*` (catalog, peers, receipts, advice) needs the token the router returns. `startPrivateRouter` returns `{ origin, token }`, and only `AiService` holds the token. It is sent on `/router/catalog` only, and never appears in `private:status`, the renderer or logs.
+  - The model routes and `/api/show` serve local apps without the token: loopback, a local Host name, and no browser Origin except a local page. Surge's main process qualifies.
+  - So a web page can't add a peer, read the catalog or prompt the models, and a DNS-rebinding name is refused.
+- **LAN peers:** a peer counts as your own network only when it is pinned, meaning its card verifies against a pinned key (RFC 7638 thumbprint) at the address the card names.
+  - Unpinned peers, which includes every plain Ollama server and every peer in `private.peers`, are listed and can be picked by name. Auto (private) skips them.
+  - An mDNS-found node is used only when pinned. Surge passes no `pins` yet (see follow-ups).
 - mDNS LAN discovery is off unless `private.mdns` is set, because binding UDP 5353 can trigger a Windows firewall prompt.
 - Types live in `apps/desktop/src/main/services/ollama-router.d.ts`.
 
@@ -88,6 +97,18 @@ Verification scripts for the ONP integration:
     - markup split across chunks never leaks, while plain text with `<` arrives whole;
     - the prompt uses signatures;
     - schema-echoed, fenced and unclosed calls are read, and an unreadable one is shown as text.
+- `packages/core/test/verify-local-access.ts` (in `pnpm test`): 38 checks, no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-local-access.ts`.
+  - **Private router** (the real `@opennodes/ollama-router` with mock Ollama and peers):
+    - A web page's `POST /router/peers` is refused, sent plain (no preflight) or as JSON. So is its preflight, and so is another local process without the token. The page's server is never probed.
+    - `/router/catalog` needs the token. Pages can't list or prompt the models, and a rebinding Host is refused.
+    - Surge still lists the private models (with `/api/show`'s "tools via prompt"), answers through the router, and never sends the token to Ollama.
+    - An unpinned LAN peer is listed but left out of Auto (private).
+  - **Surge hub** (the real `SurgeHub` behind the MCP SDK client):
+    - A read runs free. An action waits for the card. Once per site; a different site asks; scripts ask every time.
+    - Opening a page asks for the site it opens. Deny doesn't run the call.
+    - A client that disconnects cancels its card. Actions turned off while a card waits refuse the call.
+    - Bookmarks writes ask. A wrong token is refused.
+    - Every call is logged with its decision, and no arguments are kept.
 - `packages/core/test/verify-onp.ts`: a **local** registry with the fixture Echo node. Bundle it with esbuild (externals `@google/generative-ai @libsql/client @modelcontextprotocol/sdk openai`), then run it with node.
 - `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
 
@@ -160,7 +181,12 @@ Verification scripts for the ONP integration:
     - Managed in Settings → Advanced → API keys by host, with host suggestions from listed imported catalogs.
     - `ai.onpApiKey` is retired: no longer read, only migrated out of plaintext.
 - **Private mode** (one click: the lock beside the model picker):
-  - `private.enabled` starts the embedded ollama-router. `AiService.setPrivateRouter(origin)` then lists only `private:*` models from its `/router/catalog` (local and LAN tiers), led by `private:auto-private`, the router's advisor restricted to local and LAN.
+  - `private.enabled` starts the embedded ollama-router. `AiService.setPrivateRouter({ origin, token })` then lists only `private:*` models from its `/router/catalog` (local and LAN tiers, read with the router token; a refused catalog lists nothing). They are led by `private:auto-private`, the router's advisor restricted to this machine and pinned LAN nodes.
+  - Router 0.1.27 (2026-11-21): unpinned LAN models are marked "not pinned, so Auto (private) skips it", and Auto's count leaves them out. The Settings text says Surge can't pin a node yet.
+    - Verified in the dev build and in the packaged `win-unpacked` exe, on temp profiles against the real local Ollama: `gemma4`, `gemma3:12b` ("tools via prompt") and `llama3.2` were listed.
+    - Against the app's live router, a page-origin `POST /router/peers` got 401, its preflight 403 with no CORS header, and `/router/catalog` without the token 401.
+    - `electron-builder --win --dir` passes `check-node-modules.cjs` (34 packages), under both the pnpm and npm collectors. `app.asar` holds one copy each of router 0.1.27, core 0.1.24 and cli 0.1.33.
+    - Not checked: an installed copy. Installing would have replaced the user's installed Surge.
   - Every other model is refused, and the registry isn't contacted while private mode is on.
   - The previous model is restored when private mode is turned off. Private mode is restored at startup.
   - Static LAN peers and opt-in mDNS are set in Settings → Advanced → Private mode.
@@ -200,7 +226,7 @@ Verification scripts for the ONP integration:
     - Deny, no answer in 5 minutes, or a closed window: the gate throws. The model gets "The user declined this action (…). Don't try it again in this turn…", and the block shows "Declined by you".
   - **Per chat:** the renderer sends a `chatKey` with each turn (`crypto.randomUUID()`, renewed by New Chat and by reopening a chat from history). Main keeps an allowed-scope set per key, for the last 50 chats, in memory only.
   - **Known limit:** opening pages runs freely, so a steered model could still put data in a URL it opens. Asking for every page would make browsing unusable; clicks, forms and scripts, which act with the user's sign-ins, are what ask.
-  - The hub is unchanged: off by default, and read-only unless `hub.allowActions`.
+  - The Surge hub uses the same gate and card for other apps' actions since 2026-11-21 (see "Surge hub"), with its own risks (`hubToolRisk`) and its own allowed set.
   - **Verified:**
     - `verify-approvals.ts` (21 checks, in `pnpm test`): risks; once per site; a different site asks; Deny isn't remembered; scripts ask every time; servers are their own scope; the next turn of a chat remembers and a new chat asks; and a denied call never runs in the tool loop, with the model hearing it was declined.
     - `verify-core.ts`: a real MCP server's `readOnlyHint` survives into Surge's tool list.
@@ -284,9 +310,35 @@ Verification scripts for the ONP integration:
   - Tested against the SDK's `simpleStreamableHttp.js --oauth` example (MCP_PORT / MCP_AUTH_PORT), with `shell.openExternal` patched to a fetch through `--inspect`.
 - **Surge hub** (`apps/desktop/src/main/services/surge-hub.ts`): a local MCP server at `http://127.0.0.1:<hub.port, 4766>/mcp` exposing the `browser` and `bookmarks` virtual servers to other AI apps.
   - Off by default (`hub.enabled`). It needs a bearer token (`hub.token` in the keychain), uses the SDK's DNS-rebinding protection (`allowedHosts`), and is stateless: a server and transport per POST.
-  - Read-only unless `hub.allowActions`: 14 read tools, 27 with actions. Refused calls say how to allow them.
+  - Read-only unless `hub.allowActions`: 28 tools with actions (counted in the app on 2026-11-21). Refused calls say how to allow them.
   - Settings → Advanced → Surge hub shows the URL and token, with copyable setup for mcp.json (Cursor / LM Studio / VS Code), Claude Code, and Claude Desktop via `mcp-remote`.
   - Verified with the SDK's Streamable HTTP client: 401 without or with a wrong token, 403 for a spoofed Host, actions refused until allowed.
+  - **Actions ask first** (2026-11-21). Before, with `hub.allowActions` on, a call went straight to `mcp.callTool`, with no card and no record.
+    - **Risk** (`hubToolRisk` in `orchestrator/approvals.ts`): only `READ_ONLY_TOOLS` run freely. Everything else is an action, including `navigateTo`, scroll, hover and `waitForNavigation`, because the user isn't watching another app. `evaluateScript` is a script.
+    - **Scope:**
+      - Browser actions: the open page's site.
+      - `navigateTo`: the site it opens, using `BrowserService.navigateTo`'s normalisation. An Allow for "the browser" must not free every later navigation.
+      - Bookmarks: one scope.
+    - **Lifetime:** the hub keeps its own allowed set, never shared with a chat's. It clears when the hub restarts, actions are turned off or on, or the token is regenerated. The token is shared, so an Allow covers every app using the hub.
+    - **Code:** `SurgeHub` (`surge-hub.ts`) no longer imports Electron. `surge-hub-ipc.ts` wires it, and the test drives the real class.
+    - **The card:**
+      - `ask` sends `hub:approval` to the app UI and brings the window up (restoring it if minimized).
+      - `App.tsx` draws `ApprovalCard from="hub"` in a `.hub-approvals` overlay above every view, Settings included. An idle window grows while a card waits.
+      - The answer comes back through `hub:approve`. `hub:approvalDone` removes the card.
+      - No answer in 5 minutes, or a closed window: no-answer. The calling app disconnecting (the response's `close`): cancelled.
+      - An Allow after the app left, or after actions were turned off, doesn't run the call.
+    - **Log:**
+      - The `hub_calls` table (`SurgeStore.hubCalls`, kept 90 days) records tool, risk, site, decision (`read / allowed / remembered / declined / no-answer / cancelled / actions-off / unknown`), whether it ran, and how long it took.
+      - Arguments are never kept: typed text can be a password.
+      - Settings → Advanced → Surge hub → Recent calls shows the last 20 (`hub:calls`).
+    - **Verified:**
+      - `verify-local-access.ts` (hub half).
+      - The dev build over CDP on a temp profile with `hub.port` 4799, driven by an SDK client acting as another app:
+        - `navigateTo` a local page waited 10.4 s on the card ("An app using the Surge hub asks: Open a page on 127.0.0.1:4788"), then ran on Allow;
+        - `evaluateScript` showed its code and "Run once", and Deny reached the app as declined;
+        - a read ran in 38 ms with no card;
+        - a bookmark save's card showed over Settings;
+        - Recent calls listed all of them.
 - **Window layout** (`apps/desktop/src/main/main.ts`): `layoutViews()` is the only code that sizes the two views. With the page attached, the app UI gets a 400px column (half the window if narrower) and the page the rest; otherwise the app UI fills the window.
   - Every window or attach change calls it: `window:resize`, `resize`, maximize, `browser:show` and `browser:hide`.
   - Before, `window:resize` (sent on every mode change) stretched the app UI full-width under the still-attached page, which left Settings half covered.
@@ -342,7 +394,9 @@ Verification scripts for the ONP integration:
    - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
 2. **Follow-ups:**
-   - Approvals follow-ups, if wanted: a Settings list to review or forget allowed sites, and asking before opening a page with a query string to a new site after untrusted text was read (the exfiltration limit in "Actions ask first").
+   - Approvals follow-ups, if wanted: a Settings list to review or forget allowed sites (chat and hub), and asking before opening a page with a query string to a new site after untrusted text was read (the exfiltration limit in "Actions ask first").
+   - Private mode LAN pins: a `private.pins` setting passed to the router's `pins` option, with a field in Settings → Private mode. Router 0.1.27 gives Auto (private) and mDNS only pinned nodes. Get a node's key with `npx @opennodes/ollama-router --show-pin <origin>` on its own machine.
+   - Hub: per-app identity. All apps share one token today, so the card can't name the app and an Allow covers them all. Per-app tokens would fix both.
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
    - Add a mobile subpath for the platform-agnostic `onp/` modules.
