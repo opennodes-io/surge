@@ -114,8 +114,8 @@ Verification scripts for the ONP integration:
 - `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
 
 Verification for MCP discovery and stdio servers:
-- `packages/core/test/verify-discovery.ts` (64 checks, in `pnpm test`): a mock index in mcprating.io's shape, a mock official registry and local stdio servers; no network. Covers:
-  - the index: its own tier wins and its safety cap holds; Surge's fallback rule matches mcprating.io's thresholds; delisted rows are unverified; an unscored row shows no safety score; safety, flags and the start test come through; `sortBy=tested`, with a retry by quality where it's unknown; a 400 isn't a fallback; no install command is made up; no request carries a partner key or any other key
+- `packages/core/test/verify-discovery.ts` (73 checks, in `pnpm test`): a mock index in mcprating.io's shape, a mock official registry and local stdio servers; no network. Covers:
+  - the index: its own tier wins and its safety cap holds; Surge's fallback rule matches mcprating.io's thresholds; delisted rows are unverified; an unscored row shows no safety score; safety, flags and the start test come through; `sortBy=tested`, with a retry by quality where it's unknown; a 400 isn't a fallback; a search's filters, which the index drops, are applied by Surge (largest page, page size, `total`, the note, no later page), and an index that applies them loses nothing; no install command is made up; no request carries a partner key or any other key
   - the official registry: the fallback on a closed port and on a 500, and a source of its own; the adapter (remotes, npm pinned, pypi via uvx, oci not run, templated endpoints and inactive or older entries skipped); filters it can't apply; identifiers and versions that npx or uvx would read as a flag, URL, tarball or `owner/repo` get no command
   - the desktop settings migration (only the old localhost:3000, only once), imported from `apps/desktop/src/main/services/settings-migrations.ts`
   - the stdio environment: a planted `FAKE_SECRET` doesn't reach a fixture server (`test/fixtures/env-echo-server.mjs`), nor after a saved-server restart; the built bookmarks server starts with `SURGE_DB_PATH` from its own `env`
@@ -325,17 +325,22 @@ Verification for MCP discovery and stdio servers:
       - trusted: quality 60+ with a public repo and an install command or endpoint;
       - community: quality 30+;
       - safety under 50 caps it at community, under 30 at unverified.
-    - A row with a `delistedReason` is unverified. The list and search drop delisted rows, but the slug routes (`getServer`, `/servers/lookup`) still return them with their old tier.
+    - A row with a `delistedReason` is unverified, whatever tier it carries. The list and search drop delisted rows; the slug routes (`getServer`, `/servers/lookup`) still return them. mcprating.io has sent `trustTier: "unknown"` for them since MCP_Index 0022255; before that it sent their old tier.
     - `tierBasis` says which, in the badge's tooltip.
-    - mcprating.io publishes no schema for these fields, so they're read defensively.
+    - `trustTier`, `safetyScore`, `safetyBand` and `safetyFlags` are documented and stable (`/api/docs/json`, on `/servers`, `/servers/{slug}` and `/servers/lookup`, since 2026-11-21): new fields and flags may be added, but names and meanings won't change. Other fields are read defensively.
   - **Evidence, not a bare tier.** Each listing shows its safety score (band colour) and flags, and the start test: "passed", "needs credentials", "failed" or "not run", with the date and tool count in the tooltip. The index fields are `safetyScore`, `safetyFlags`, `verification.latestOutcome`, `metadata.verification.tools`, `metadata.remotes` and `delistedReason`.
     - The safety score is a heuristic over repository and package metadata, not a scan, and the tooltip says so.
-    - The band comes from the score (80 / 50, the index's thresholds), not from `safetyBand`.
+    - The band comes from the score with the thresholds documented for `safetyBand` (80 / 50), so the badge always agrees with the number.
     - A row with no quality score shows no safety score: one added since the index's last scoring pass can read 100 without being assessed.
   - **Order.** The panel defaults to "Tested first" (`sortBy=tested`, on mcprating.io since 2026-11-11): servers that passed the start test come first.
     - An index that rejects it with a 400 is asked again by quality.
     - Any other 400 (an unknown category, say) is the index answering, so it shows the index's reason rather than falling back.
     - The parameters are `search` and `sortBy`; `q` and `sort` would be silently ignored.
+  - **Filters with a search** (fixed 2026-11-21). With `search` set, mcprating.io applies `category` and `sortBy` but drops `hasUi`, `isOfficial`, `minScore` and `requiresAuth` (`search=github&minScore=70` returned 41s), so "Official only" and "Has UI" showed rows that didn't match. Not fixed upstream yet.
+    - For a search with any of them, `listServers` asks for 100 rows (the API's largest page; more is a 400), filters on `supportsUi`/`uiType`, `isOfficial`, `qualityScore` and `requiresAuth`, and keeps the requested page size.
+    - `total` counts the matches found. When the page was full and too few matched, the note says only the first 100 were checked.
+    - The filters are still sent, so a fixed index loses nothing. A later page (`offset` > 0) is empty, since the index's offsets count unfiltered rows; the panel doesn't page.
+    - Queries without a search are unchanged.
   - **Disclosure.** One line under "Discover Servers" names the source. For mcprating.io it says it has the same maintainer as Surge, and that the source can be changed in Settings → Advanced. A fallback says the index didn't answer. No key is ever sent (mcprating.io's promoted results need `x-partner-key`).
   - **No made-up commands.** A listing without a command, npm package or endpoint used to connect as `npx -y <slug>`, which runs whatever npm package has that name (or, for `owner/repo`, a GitHub repository).
     - `connectConfigFor` returns null for it, and Connect is disabled.

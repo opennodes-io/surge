@@ -54,7 +54,7 @@ export interface IndexServer {
   safetyBand?: SafetyBand | null;
   safetyFlags?: string[];
   startTest?: StartTest | null;
-  /** The index delisted it (its slug routes still return such rows); shown as unverified. */
+  /** The index delisted it (only its slug routes return such rows); shown as unverified. */
   delisted?: string | null;
   /** 'mcp-index' (a rating index) or 'mcp-registry' (the official registry). */
   source?: string;
@@ -96,6 +96,10 @@ export interface DiscoveryOrigin {
 
 export interface DiscoveryResult {
   servers: IndexServer[];
+  /**
+   * Matches in all. For a search with a filter, which mcprating.io doesn't apply then, it's the
+   * matches Surge found in the results it checked.
+   */
   total: number;
   from: DiscoveryOrigin;
 }
@@ -112,6 +116,8 @@ export interface DiscoveryConnect {
 
 const TIERS: readonly TrustTier[] = ['verified', 'trusted', 'community', 'unverified'];
 const TIMEOUT_MS = 6000;
+/** The largest page mcprating.io serves (a larger limit is a 400). */
+const MAX_INDEX_PAGE = 100;
 
 /** The source's tier, if it sent one. mcprating.io's fourth tier is `unknown` ("Unverified" in its UI). */
 function sourceTier(raw: unknown): TrustTier | undefined {
@@ -200,7 +206,8 @@ export function normalizeIndexServer(s: any, source = 'mcp-index'): IndexServer 
   // mcprating.io's safety score is a heuristic over repository and package metadata, and a row added
   // since its last scoring pass can read 100 without having been assessed; its quality is still 0. So
   // without a quality score there's no safety score either. The band is worked out here from the score
-  // (the index's thresholds), not read from `safetyBand`, which has no published contract.
+  // with the index's thresholds (80 / 50), which its API docs give for `safetyBand` too, so the badge
+  // always agrees with the number beside it.
   const quality = num(s.qualityScore) ?? num(s.quality_score);
   const safetyScore = quality ? num(s.safetyScore) ?? num(s.safety_score) : null;
   const delisted = str(s.delistedReason) ?? str(s.delisted_reason);
@@ -235,8 +242,9 @@ export function normalizeIndexServer(s: any, source = 'mcp-index'): IndexServer 
   };
   const tier = sourceTier(s.trustTier ?? s.trust_tier);
   if (delisted) {
-    // The list and search drop delisted rows, but the slug routes (getServer) return them, still with
-    // their old tier. The gateway treats them as unverified, and so does Surge.
+    // The list and search drop delisted rows; the slug routes (getServer) still return them.
+    // mcprating.io sends trustTier "unknown" for them (since MCP_Index 0022255); earlier it sent their
+    // old tier. Surge shows them as unverified whatever tier they carry.
     out.trustTier = 'unverified';
     out.tierBasis = 'source';
   } else if (tier) {
@@ -348,6 +356,20 @@ export interface DiscoveryClientOptions {
   registryUrl?: string;
 }
 
+/** Whether a query has any of the filters mcprating.io ignores when it has a search. */
+function hasFilters(q: DiscoveryQuery): boolean {
+  return !!q.hasUi || q.minScore != null || q.requiresAuth != null || q.isOfficial != null;
+}
+
+/** A listing against those filters, read from the fields the index itself filters on. */
+function matchesFilters(s: IndexServer, q: DiscoveryQuery): boolean {
+  if (q.hasUi && !(s.supportsUi || s.uiType)) return false;
+  if (q.isOfficial != null && !!s.isOfficial !== q.isOfficial) return false;
+  if (q.minScore != null && (s.qualityScore ?? 0) < q.minScore) return false;
+  if (q.requiresAuth != null && !!s.requiresAuth !== q.requiresAuth) return false;
+  return true;
+}
+
 export class DiscoveryClient {
   private registryUrl: string;
 
@@ -378,13 +400,21 @@ export class DiscoveryClient {
     const base = this.base();
     if (base && isRegistryBase(base)) return this.fromRegistry(base, q, {});
     if (!base) return this.fromRegistry(this.registryUrl, q, {});
+    const limit = q.limit ?? 24;
+    // With `search`, mcprating.io applies category and sortBy but drops hasUi, isOfficial, minScore and
+    // requiresAuth (seen 2026-11-21: search=github&minScore=70 returns servers scoring 41). So for a
+    // search with any of them, Surge asks for the largest page and filters it itself. The filters are
+    // still sent, so an index that applies them loses nothing. Its offsets would count unfiltered
+    // rows, so there's no page after the first.
+    const filterHere = !!q.search && hasFilters(q);
+    if (filterHere && (q.offset ?? 0) > 0) return { servers: [], total: 0, from: { kind: 'index', url: base } };
     try {
       const p = new URLSearchParams();
       // mcprating.io's parameters are `search` and `sortBy`; `q` and `sort` are ignored, not rejected.
       if (q.search) p.set('search', q.search);
       if (q.category) p.set('category', q.category);
       p.set('sortBy', q.sortBy || 'quality');
-      p.set('limit', String(q.limit ?? 24));
+      p.set('limit', String(filterHere ? MAX_INDEX_PAGE : limit));
       p.set('offset', String(q.offset ?? 0));
       if (q.hasUi) p.set('hasUi', 'true');
       if (q.minScore != null) p.set('minScore', String(q.minScore));
@@ -408,6 +438,13 @@ export class DiscoveryClient {
         const items: any[] | null = Array.isArray(data?.data) ? data.data : Array.isArray(data?.servers) ? data.servers : null;
         if (items) {
           const servers = items.map((s) => (s?.server ? normalizeRegistryServer(s) : normalizeIndexServer(s))).filter((s): s is IndexServer => !!s);
+          if (filterHere) {
+            const matches = servers.filter((s) => matchesFilters(s, q));
+            const checked = items.length >= MAX_INDEX_PAGE && matches.length < limit
+              ? { note: `Only the first ${MAX_INDEX_PAGE} results for this search were checked against the filters. Try a narrower search.` }
+              : {};
+            return { servers: matches.slice(0, limit), total: matches.length, from: { kind: 'index', url: base, ...checked } };
+          }
           return { servers, total: data.total ?? servers.length, from: { kind: 'index', url: base } };
         }
       }

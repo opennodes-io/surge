@@ -1,7 +1,8 @@
 // MCP discovery sources and the stdio server environment. Run via tsx; hermetic: mock index, mock
 // official registry and local stdio servers only, no network.
 //  1) The index (mcprating.io's shape): its own trust tier and safety cap win; safety, flags and the
-//     start test come through; nothing makes up an install command; no key is ever sent.
+//     start test come through; nothing makes up an install command; no key is ever sent; a search's
+//     filters, which the index drops, are applied here.
 //  2) The official MCP Registry ({servers:[{server}]}): the fallback when the index doesn't answer, and
 //     a source of its own; entries are listed without a tier.
 //  3) The settings migration: only the old localhost:3000 default, and only once.
@@ -73,7 +74,7 @@ const INDEX_ITEMS = [
     slug: 'unscored', name: 'Unscored', description: '', installCommand: 'npx -y unscored', qualityScore: 0, trustTier: 'unknown',
     safetyScore: 100, safetyBand: 'safe', safetyFlags: [],
   },
-  { // the slug routes still return delisted rows, with their old tier
+  { // a delisted row as an index before MCP_Index 0022255 sent it, still carrying its old tier
     slug: 'delisted-row', name: 'Delisted', description: '', installCommand: 'npx -y delisted-row', qualityScore: 88, trustTier: 'trusted',
     safetyScore: 95, safetyBand: 'safe', delistedReason: 'duplicate', delistedAt: '2026-11-01T00:00:00Z',
   },
@@ -96,6 +97,17 @@ const INDEX_ITEMS = [
   },
 ];
 
+// A search the way mcprating.io answers one (2026-11-21): category and sortBy apply, but hasUi,
+// isOfficial, minScore and requiresAuth are dropped. 130 rows; in the first 100, 10 are official,
+// one has a UI and none is both. `searchAppliesFilters` plays an index that has fixed it.
+const SEARCH_TERM = 'gh';
+const SEARCH_ITEMS = Array.from({ length: 130 }, (_, i) => ({
+  slug: `gh-${i}`, name: `gh ${i}`, description: '', installCommand: `npx -y gh-${i}`, repositoryUrl: `https://github.com/example/gh-${i}`,
+  qualityScore: 40 + (i % 50), isOfficial: i % 10 === 3, supportsUi: i === 7 || i === 120, uiType: i === 7 || i === 120 ? 'mcp-apps' : null,
+  trustTier: 'community', safetyScore: 90, safetyFlags: [],
+}));
+let searchAppliesFilters = false;
+
 const indexSeen: Seen[] = [];
 let indexBroken = false;
 let indexKnowsTested = true; // sortBy=tested exists on mcprating.io since 2026-11-11
@@ -106,6 +118,18 @@ const index = http.createServer((req, res) => {
   const bad = (error: string) => void res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error }));
   if (url.pathname === '/api/v1/servers' && url.searchParams.get('category') === 'no-such') return bad('Unknown category "no-such". Use a category slug: ai-ml, design-creative');
   if (url.pathname === '/api/v1/servers' && url.searchParams.get('sortBy') === 'tested' && !indexKnowsTested) return bad('Invalid sortBy');
+  if (url.pathname === '/api/v1/servers' && url.searchParams.get('search') === SEARCH_TERM) {
+    const sp = url.searchParams;
+    const limit = Number(sp.get('limit') || 24);
+    const offset = Number(sp.get('offset') || 0);
+    if (limit > 100) return bad('Validation failed');
+    const rows = searchAppliesFilters
+      ? SEARCH_ITEMS.filter((s) => (sp.get('isOfficial') !== 'true' || s.isOfficial) && (sp.get('hasUi') !== 'true' || s.supportsUi)
+        && s.qualityScore >= Number(sp.get('minScore') || 0))
+      : SEARCH_ITEMS;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return void res.end(JSON.stringify({ data: rows.slice(offset, offset + limit), total: rows.length, limit, offset }));
+  }
   if (url.pathname === '/api/v1/servers') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return void res.end(JSON.stringify({ data: INDEX_ITEMS, total: 104791, limit: 24, offset: 0 }));
@@ -219,6 +243,38 @@ const by = (list: IndexServer[], slug: string) => list.find((s) => s.slug === sl
   check('a 400 (unknown category) is the index answering: no fallback, and the reason is shown',
     rejected.from.kind === 'index' && !rejected.from.fallback && rejected.servers.length === 0 && /Unknown category/.test(rejected.from.note || '')
       && registrySeen.length === registryBefore, JSON.stringify(rejected.from));
+  // A search with filters: mcprating.io drops them then, so Surge filters the largest page itself.
+  const officialOnly = await client.listServers({ search: SEARCH_TERM, isOfficial: true, sortBy: 'tested', limit: 24 });
+  const asked = indexSeen.at(-1)!.url.searchParams;
+  check('a search with a filter asks for the largest page, and still sends the filter',
+    asked.get('limit') === '100' && asked.get('offset') === '0' && asked.get('isOfficial') === 'true' && asked.get('sortBy') === 'tested', asked.toString());
+  check('a search with "official only" shows only official servers, total counts them, and the note says 100 were checked',
+    officialOnly.servers.length === 10 && officialOnly.servers.every((s) => s.isOfficial) && officialOnly.total === 10 && officialOnly.from.kind === 'index' && /first 100 results/.test(officialOnly.from.note || ''),
+    JSON.stringify({ n: officialOnly.servers.length, total: officialOnly.total, note: officialOnly.from.note }));
+  const scored = await client.listServers({ search: SEARCH_TERM, minScore: 85, limit: 3 });
+  check('a search with a minimum score drops lower scores, then keeps the asked-for page size',
+    scored.servers.length === 3 && scored.servers.every((s) => (s.qualityScore ?? 0) >= 85) && scored.total === 10);
+  const withUi = await client.listServers({ search: SEARCH_TERM, hasUi: true, limit: 24 });
+  check('a search with "has UI" shows only servers with a UI', withUi.servers.length === 1 && withUi.servers[0].slug === 'gh-7');
+  const neither = await client.listServers({ search: SEARCH_TERM, hasUi: true, isOfficial: true, limit: 24 });
+  check('no match in the first 100 is empty, with a note that only those were checked',
+    neither.servers.length === 0 && neither.total === 0 && /first 100 results/.test(neither.from.note || ''), JSON.stringify(neither.from));
+  const seenBefore = indexSeen.length;
+  const later = await client.listServers({ search: SEARCH_TERM, isOfficial: true, offset: 24 });
+  check("a later page of a filtered search is empty (the index's offsets count unfiltered rows)",
+    later.servers.length === 0 && later.total === 0 && indexSeen.length === seenBefore);
+  const plain = await client.listServers({ search: SEARCH_TERM, limit: 24 });
+  check("a search without filters is the index's page as it is",
+    plain.servers.length === 24 && plain.total === SEARCH_ITEMS.length && indexSeen.at(-1)!.url.searchParams.get('limit') === '24');
+  const noSearch = await client.listServers({ isOfficial: true, limit: 24 });
+  check("without a search, the index's own filtering is trusted: its page and total come through",
+    noSearch.servers.length === INDEX_ITEMS.length && noSearch.total === 104791 && indexSeen.at(-1)!.url.searchParams.get('limit') === '24');
+  searchAppliesFilters = true;
+  const fixed = await client.listServers({ search: SEARCH_TERM, isOfficial: true, limit: 24 });
+  searchAppliesFilters = false;
+  check('an index that applies the filters itself loses nothing: all 13 official matches, no note',
+    fixed.servers.length === 13 && fixed.servers.every((s) => s.isOfficial) && fixed.total === 13 && !fixed.from.note);
+
   const cats = await client.listCategories();
   check('categories come from the index', cats.length === 1 && cats[0].slug === 'design-creative');
   const q = indexSeen[0].url.searchParams;
