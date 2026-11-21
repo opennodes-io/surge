@@ -110,6 +110,12 @@ Verification scripts for the ONP integration:
     - An unknown tool is answered as unknown, even on an exposed server, and a long tool name is clipped in the log.
     - Bookmarks writes ask. A wrong token is refused.
     - Every call is logged with its decision, and no arguments are kept.
+- `servers/bookmarks-history-mcp/test/http-access.ts` (in `pnpm test`): 40 checks on the built `dist/http.js` (port 0, temp DB), no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx test/http-access.ts` after a build.
+  - Refused, each with the token so only one check is left to stop it: no or a wrong token (401, and before a 5 MiB body is read), a spoofed Host (403), a web page's preflight, simple POST, JSON POST and same-site page (403, no CORS grant, nothing written), a body over 4 MiB declared or chunked (413).
+  - The 413 also reaches a client that sent `Connection: close`. The server reads an oversized body to the end before answering: answered at once, that client got a reset instead on Windows (9 of 10 declared 5 MiB bodies, 4 of 10 chunked).
+  - The SDK's Streamable HTTP client with the token lists, writes and reads, and no response has CORS headers.
+  - At 32 sessions the least recently used idle one is closed, never one with an open GET stream; a closed id gets 404.
+  - A generated token is printed and works; a token under 16 characters stops the start.
 - `packages/core/test/verify-onp.ts`: a **local** registry with the fixture Echo node. Bundle it with esbuild (externals `@google/generative-ai @libsql/client @modelcontextprotocol/sdk openai`), then run it with node.
 - `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
 
@@ -376,7 +382,7 @@ Verification for MCP discovery and stdio servers:
     - stdio messages are capped at 10 MiB;
     - client redirects stay on the endpoint's origin;
     - OAuth credentials are bound to their issuer, and old ones still work.
-    - The hub reads its own body (4 MiB), so the SDK's new HTTP limit doesn't apply.
+    - The hub reads its own body (4 MiB), so the SDK's new HTTP limit doesn't apply. The standalone server's HTTP mode does the same, with the same cap.
   - **Electron:** the target is 45.x (Chromium 156, Node 24.22).
     - 45 deprecates the synchronous `safeStorage` methods `SecretStore` uses, and 46 removes them.
     - libsql's binding is N-API. `node:sqlite` isn't used.
@@ -391,6 +397,10 @@ Verification for MCP discovery and stdio servers:
   - The client registration and tokens are stored per server URL in the keychain (`mcp.oauth.<host><path>#client|tokens`), so reconnects reuse them. Sign out forgets them.
   - `connectServer(config, { interactive: false })` (used by `reconnectSaved`) never opens a browser.
   - Tested against the SDK's `simpleStreamableHttp.js --oauth` example (MCP_PORT / MCP_AUTH_PORT), with `shell.openExternal` patched to a fetch through `--inspect`.
+- **Standalone bookmarks server, HTTP mode** (`servers/bookmarks-history-mcp/src/http.ts`, 2026-11-21; not in the installer). Before, it sent `Access-Control-Allow-Origin: *` with no token or body limit, so any web page could read and write bookmarks and history while it ran. Now it has the hub's checks, in this order:
+  - Host (403; plus the SDK's `allowedHosts`), then any `Origin` or `Sec-Fetch-Site` (403; no CORS headers at all), then path, then the bearer token (401, SHA-256 digests through `timingSafeEqual`), then the body (4 MiB, 413 once the rest is read and dropped).
+  - It listens on 127.0.0.1. The token is `SURGE_MCP_HTTP_TOKEN` (16+ characters), or a generated one printed to stderr.
+  - Sessions stay stateful: at most 32, closed after 10 idle minutes, and the least recently used idle one makes room. A session with a request or GET stream open is never closed. An unknown id gets 404.
 - **Surge hub** (`apps/desktop/src/main/services/surge-hub.ts`): a local MCP server at `http://127.0.0.1:<hub.port, 4766>/mcp` exposing the `browser` and `bookmarks` virtual servers to other AI apps.
   - Off by default (`hub.enabled`). It needs a bearer token (`hub.token` in the keychain), uses the SDK's DNS-rebinding protection (`allowedHosts`), and is stateless: a server and transport per POST.
   - Read-only unless `hub.allowActions`: 28 tools with actions (counted in the app on 2026-11-21). Refused calls say how to allow them.
@@ -492,7 +502,6 @@ Verification for MCP discovery and stdio servers:
    - Add a mobile subpath for the platform-agnostic `onp/` modules.
    - A way to set a stdio server's `env`, now that Surge's environment isn't inherited. Secrets belong in the keychain, not in `mcp.savedServers`. The official registry's `environmentVariables` (with `isRequired` / `isSecret`) say what to ask for. Never fill them from Surge's own environment.
    - Test a `uvx` server on Windows once uv is installed.
-   - The standalone bookmarks server's HTTP mode (`servers/bookmarks-history-mcp/src/http.ts`) sends `Access-Control-Allow-Origin: *`, with no token and no body limit. While it runs, any web page can read and write bookmarks and history. It isn't in the installer, but give it the hub's token and Host checks.
 3. **Live UI, next phases** (the MVP and phase 2 are in "Known state"):
    - Phase 2 follow-ups:
      - The "When it helps" cues are English only; other languages get no view unless the setting is "Every turn".
