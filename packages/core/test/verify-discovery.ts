@@ -60,12 +60,23 @@ const INDEX_ITEMS = [
   },
   { // the index's fourth tier is "unknown"
     slug: 'mystery', name: 'Mystery', description: 'Little known', installCommand: 'npx -y mystery-mcp', accessMethod: 'npm',
-    qualityScore: 20, trustTier: 'unknown', safetyScore: 62, safetyBand: 'caution', safetyFlags: ['low-adoption', 'no-repository'], verification: null,
+    qualityScore: 20, trustTier: 'unknown', safetyScore: 62, safetyBand: 'safe', safetyFlags: ['low-adoption', 'no-repository'], verification: null,
   },
   { // an older index without trustTier: Surge's estimate, capped by the safety score
     slug: 'legacy-risky', name: 'Legacy risky', description: '', installCommand: 'npx -y legacy-risky', qualityScore: 90, safetyScore: 25,
   },
-  { slug: 'legacy-fine', name: 'Legacy fine', description: '', installCommand: 'npx -y legacy-fine', qualityScore: 90 },
+  { slug: 'legacy-fine', name: 'Legacy fine', description: '', installCommand: 'npx -y legacy-fine', qualityScore: 90, repositoryUrl: 'https://github.com/example/legacy-fine' },
+  { // no public repo: mcprating.io's rule stops at community
+    slug: 'legacy-norepo', name: 'Legacy no repo', description: '', installCommand: 'npx -y legacy-norepo', qualityScore: 90,
+  },
+  { // added since the last scoring pass: safety reads 100 but nothing was assessed (quality 0)
+    slug: 'unscored', name: 'Unscored', description: '', installCommand: 'npx -y unscored', qualityScore: 0, trustTier: 'unknown',
+    safetyScore: 100, safetyBand: 'safe', safetyFlags: [],
+  },
+  { // the slug routes still return delisted rows, with their old tier
+    slug: 'delisted-row', name: 'Delisted', description: '', installCommand: 'npx -y delisted-row', qualityScore: 88, trustTier: 'trusted',
+    safetyScore: 95, safetyBand: 'safe', delistedReason: 'duplicate', delistedAt: '2026-11-01T00:00:00Z',
+  },
   { // hosted only: no install command, the endpoint is in metadata.remotes
     slug: 'io-github-example-hosted', name: 'Hosted', description: 'A remote server', accessMethod: 'remote', installCommand: null, npmPackage: null,
     qualityScore: 80, trustTier: 'trusted', safetyScore: 92, safetyBand: 'safe', safetyFlags: [],
@@ -87,10 +98,14 @@ const INDEX_ITEMS = [
 
 const indexSeen: Seen[] = [];
 let indexBroken = false;
+let indexKnowsTested = true; // sortBy=tested exists on mcprating.io since 2026-11-11
 const index = http.createServer((req, res) => {
   const url = new URL(req.url || '/', 'http://x');
   indexSeen.push({ url, headers: req.headers });
   if (indexBroken) return void res.writeHead(500).end('{"error":"down"}');
+  const bad = (error: string) => void res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error }));
+  if (url.pathname === '/api/v1/servers' && url.searchParams.get('category') === 'no-such') return bad('Unknown category "no-such". Use a category slug: ai-ml, design-creative');
+  if (url.pathname === '/api/v1/servers' && url.searchParams.get('sortBy') === 'tested' && !indexKnowsTested) return bad('Invalid sortBy');
   if (url.pathname === '/api/v1/servers') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return void res.end(JSON.stringify({ data: INDEX_ITEMS, total: 104791, limit: 24, offset: 0 }));
@@ -162,7 +177,22 @@ const by = (list: IndexServer[], slug: string) => list.find((s) => s.slug === sl
   check("without the index's tier, Surge's estimate is capped by the safety score",
     by(s, 'legacy-risky')!.trustTier === 'unverified' && by(s, 'legacy-risky')!.tierBasis === 'surge'
       && by(s, 'legacy-fine')!.trustTier === 'trusted' && by(s, 'legacy-fine')!.tierBasis === 'surge');
-  check('a safety score with no band gets one from the same thresholds', by(s, 'legacy-risky')!.safetyBand === 'risk');
+  check("Surge's estimate is mcprating.io's rule: trusted needs a public repo", by(s, 'legacy-norepo')!.trustTier === 'community');
+  const rule = (x: Parameters<typeof deriveTrustTier>[0]) => deriveTrustTier(x);
+  const ok = { repositoryUrl: 'https://github.com/x/y', installCommand: 'npx -y y' };
+  check("the rule's thresholds: verified, 60 trusted, 30 community, safety caps",
+    rule({ isVerified: true, qualityScore: 10 }) === 'verified' && rule({ isOfficial: true, qualityScore: 80, ...ok }) === 'verified'
+      && rule({ isOfficial: true, qualityScore: 79, ...ok }) === 'trusted' && rule({ qualityScore: 60, ...ok }) === 'trusted'
+      && rule({ qualityScore: 60, repositoryUrl: ok.repositoryUrl, remoteUrl: 'https://x/mcp' }) === 'trusted'
+      && rule({ qualityScore: 60, repositoryUrl: ok.repositoryUrl }) === 'community' && rule({ qualityScore: 59, ...ok }) === 'community'
+      && rule({ qualityScore: 30 }) === 'community' && rule({ qualityScore: 29, ...ok }) === 'unverified'
+      && rule({ qualityScore: 95, safetyScore: 49, ...ok }) === 'community' && rule({ isVerified: true, safetyScore: 29 }) === 'unverified');
+  check('the safety band comes from the score, not the index\'s safetyBand', by(s, 'legacy-risky')!.safetyBand === 'risk' && mystery.safetyBand === 'caution');
+  const unscored = by(s, 'unscored')!;
+  check('a row with no quality score shows no safety score (100 there means not assessed)',
+    unscored.safetyScore === null && unscored.safetyBand === null && unscored.trustTier === 'unverified');
+  const delisted = by(s, 'delisted-row')!;
+  check('a delisted row is unverified, whatever tier it still carries', delisted.trustTier === 'unverified' && delisted.delisted === 'duplicate');
 
   const npm = connectConfigFor(trusted);
   check("an npm listing connects with the index's own command", npm?.transport === 'stdio' && npm.command === 'npx' && npm.args?.join(' ') === 'premiere-pro-mcp');
@@ -177,6 +207,18 @@ const by = (list: IndexServer[], slug: string) => list.find((s) => s.slug === sl
   check('an npm package without a command runs as npx -y <package>', by(s, 'pkg-only')!.installCommand === 'npx -y @scope/pkg-only');
   check("an npm package that npx would read as owner/repo gets no command", by(s, 'gh-shorthand')!.installCommand === null && connectConfigFor(by(s, 'gh-shorthand')!) === null);
 
+  const tested = await client.listServers({ sortBy: 'tested' });
+  check('the start-test order reaches the index', indexSeen.at(-1)!.url.searchParams.get('sortBy') === 'tested' && tested.from.kind === 'index');
+  indexKnowsTested = false;
+  const older = await client.listServers({ sortBy: 'tested' });
+  indexKnowsTested = true;
+  check('an index without it is asked again by quality, not abandoned',
+    older.from.kind === 'index' && older.servers.length === INDEX_ITEMS.length && indexSeen.at(-1)!.url.searchParams.get('sortBy') === 'quality');
+  const registryBefore = registrySeen.length;
+  const rejected = await client.listServers({ category: 'no-such' });
+  check('a 400 (unknown category) is the index answering: no fallback, and the reason is shown',
+    rejected.from.kind === 'index' && !rejected.from.fallback && rejected.servers.length === 0 && /Unknown category/.test(rejected.from.note || '')
+      && registrySeen.length === registryBefore, JSON.stringify(rejected.from));
   const cats = await client.listCategories();
   check('categories come from the index', cats.length === 1 && cats[0].slug === 'design-creative');
   const q = indexSeen[0].url.searchParams;

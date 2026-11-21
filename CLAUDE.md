@@ -92,8 +92,8 @@ Verification scripts for the ONP integration:
 - `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
 
 Verification for MCP discovery and stdio servers:
-- `packages/core/test/verify-discovery.ts` (57 checks, in `pnpm test`): a mock index in mcprating.io's shape, a mock official registry and local stdio servers; no network. Covers:
-  - the index: its own tier wins and its safety cap holds; safety, flags and the start test come through; no install command is made up; no request carries a partner key or any other key
+- `packages/core/test/verify-discovery.ts` (64 checks, in `pnpm test`): a mock index in mcprating.io's shape, a mock official registry and local stdio servers; no network. Covers:
+  - the index: its own tier wins and its safety cap holds; Surge's fallback rule matches mcprating.io's thresholds; delisted rows are unverified; an unscored row shows no safety score; safety, flags and the start test come through; `sortBy=tested`, with a retry by quality where it's unknown; a 400 isn't a fallback; no install command is made up; no request carries a partner key or any other key
   - the official registry: the fallback on a closed port and on a 500, and a source of its own; the adapter (remotes, npm pinned, pypi via uvx, oci not run, templated endpoints and inactive or older entries skipped); filters it can't apply; identifiers and versions that npx or uvx would read as a flag, URL, tarball or `owner/repo` get no command
   - the desktop settings migration (only the old localhost:3000, only once), imported from `apps/desktop/src/main/services/settings-migrations.ts`
   - the stdio environment: a planted `FAKE_SECRET` doesn't reach a fixture server (`test/fixtures/env-echo-server.mjs`), nor after a saved-server restart; the built bookmarks server starts with `SURGE_DB_PATH` from its own `env`
@@ -293,9 +293,22 @@ Verification for MCP discovery and stdio servers:
     - `McpManager.discoverServers` (IPC `mcp:discover`) uses the same `DiscoveryClient`.
   - **Tiers.** `trustTier` came from `qualityScore` alone, so a server mcprating.io caps for safety could show as "trusted".
     - Now the source's own `trustTier` wins (its `unknown` shows as `unverified`).
-    - Surge's rule (`deriveTrustTier`) runs only without one, and applies the same cap: safety under 50 is at most community, under 30 unverified.
+    - Surge's rule (`deriveTrustTier`) runs only without one. It is mcprating.io's rule (MCP_Index `src/scoring/trust-tier.ts`):
+      - verified: `isVerified`, or official with quality 80+;
+      - trusted: quality 60+ with a public repo and an install command or endpoint;
+      - community: quality 30+;
+      - safety under 50 caps it at community, under 30 at unverified.
+    - A row with a `delistedReason` is unverified. The list and search drop delisted rows, but the slug routes (`getServer`, `/servers/lookup`) still return them with their old tier.
     - `tierBasis` says which, in the badge's tooltip.
-  - **Evidence, not a bare tier.** Each listing shows its safety score (band colour) and flags, and the start test: "passed", "needs credentials", "failed" or "not run", with the date and tool count in the tooltip. The index fields are `safetyScore`, `safetyBand`, `safetyFlags`, `verification.latestOutcome`, `metadata.verification.tools` and `metadata.remotes`.
+    - mcprating.io publishes no schema for these fields, so they're read defensively.
+  - **Evidence, not a bare tier.** Each listing shows its safety score (band colour) and flags, and the start test: "passed", "needs credentials", "failed" or "not run", with the date and tool count in the tooltip. The index fields are `safetyScore`, `safetyFlags`, `verification.latestOutcome`, `metadata.verification.tools`, `metadata.remotes` and `delistedReason`.
+    - The safety score is a heuristic over repository and package metadata, not a scan, and the tooltip says so.
+    - The band comes from the score (80 / 50, the index's thresholds), not from `safetyBand`.
+    - A row with no quality score shows no safety score: one added since the index's last scoring pass can read 100 without being assessed.
+  - **Order.** The panel defaults to "Tested first" (`sortBy=tested`, on mcprating.io since 2026-11-11): servers that passed the start test come first.
+    - An index that rejects it with a 400 is asked again by quality.
+    - Any other 400 (an unknown category, say) is the index answering, so it shows the index's reason rather than falling back.
+    - The parameters are `search` and `sortBy`; `q` and `sort` would be silently ignored.
   - **Disclosure.** One line under "Discover Servers" names the source. For mcprating.io it says it has the same maintainer as Surge, and that the source can be changed in Settings → Advanced. A fallback says the index didn't answer. No key is ever sent (mcprating.io's promoted results need `x-partner-key`).
   - **No made-up commands.** A listing without a command, npm package or endpoint used to connect as `npx -y <slug>`, which runs whatever npm package has that name (or, for `owner/repo`, a GitHub repository).
     - `connectConfigFor` returns null for it, and Connect is disabled.

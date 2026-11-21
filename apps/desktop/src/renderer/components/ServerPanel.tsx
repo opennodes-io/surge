@@ -9,6 +9,7 @@ interface ServerPanelProps {
 }
 
 const SORTS: Array<{ key: DiscoveryQuery['sortBy']; label: string }> = [
+  { key: 'tested', label: 'Tested first' },
   { key: 'quality', label: 'Top rated' },
   { key: 'stars', label: 'Stars' },
   { key: 'downloads', label: 'Downloads' },
@@ -86,7 +87,8 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
   const [origin, setOrigin] = useState<DiscoveryOrigin | null>(null);
   const [categories, setCategories] = useState<IndexCategory[]>([]);
   const [category, setCategory] = useState<string>('');
-  const [sortBy, setSortBy] = useState<DiscoveryQuery['sortBy']>('quality');
+  // Servers that passed the index's start test first: they're the ones most likely to just work.
+  const [sortBy, setSortBy] = useState<DiscoveryQuery['sortBy']>('tested');
   const [hasUi, setHasUi] = useState(false);
   const [officialOnly, setOfficialOnly] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
@@ -224,9 +226,11 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
   const indexName = sourceHost || 'the index';
 
   const tierTitle = (s: IndexServer) =>
-    s.tierBasis === 'source'
-      ? `Trust tier from ${indexName}, capped by its safety score`
-      : 'Estimated by Surge from the quality score; the source sent no tier';
+    s.delisted
+      ? `${indexName} delisted it (${s.delisted})`
+      : s.tierBasis === 'source'
+        ? `Trust tier from ${indexName}, capped by its safety score`
+        : "Estimated by Surge with the index's rule; the source sent no tier";
 
   const startTestBadge = (s: IndexServer) => {
     if (s.source !== 'mcp-index') return null; // only an index runs start tests
@@ -250,8 +254,9 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
     if (s.source !== 'mcp-index' && s.safetyScore == null && !flags.length) return null;
     return (
       <div className="sp-discovery-evidence">
+        {s.delisted && <span className="badge badge-red" title={tierTitle(s)} style={{ fontSize: '0.55rem' }}>delisted</span>}
         {s.safetyScore != null && (
-          <span className={`badge ${SAFETY_CLASS[s.safetyBand || ''] || 'badge-muted'}`} title={`Safety score from ${indexName}: risk signals from public data, not a malware scan`} style={{ fontSize: '0.55rem' }}>
+          <span className={`badge ${SAFETY_CLASS[s.safetyBand || ''] || 'badge-muted'}`} title={`Safety score from ${indexName}: a heuristic over repository and package metadata, not a scan`} style={{ fontSize: '0.55rem' }}>
             safety {Math.round(s.safetyScore)}
           </span>
         )}

@@ -54,6 +54,8 @@ export interface IndexServer {
   safetyBand?: SafetyBand | null;
   safetyFlags?: string[];
   startTest?: StartTest | null;
+  /** The index delisted it (its slug routes still return such rows); shown as unverified. */
+  delisted?: string | null;
   /** 'mcp-index' (a rating index) or 'mcp-registry' (the official registry). */
   source?: string;
 }
@@ -68,7 +70,8 @@ export interface IndexCategory {
 export interface DiscoveryQuery {
   search?: string;
   category?: string;
-  sortBy?: 'quality' | 'stars' | 'downloads' | 'recent' | 'name';
+  /** 'tested' (mcprating.io): servers that passed the start test first. */
+  sortBy?: 'tested' | 'quality' | 'stars' | 'downloads' | 'recent' | 'name';
   limit?: number;
   offset?: number;
   hasUi?: boolean;
@@ -118,15 +121,26 @@ function sourceTier(raw: unknown): TrustTier | undefined {
 }
 
 /**
- * Surge's own estimate, used only when the source sends a quality score but no tier. A safety score
- * caps it the way mcprating.io's own rule does: under 50 at most community, under 30 unverified.
+ * Surge's own estimate, used only when the source sends a quality score but no tier. It is
+ * mcprating.io's rule (MCP_Index `src/scoring/trust-tier.ts`), so a row reads the same either way:
+ * verified when verified, or official with quality 80+; trusted with quality 60+, a public repo and a
+ * way to run it (an install command or an endpoint); community with quality 30+. A safety score caps
+ * it: under 50 at most community, under 30 unverified.
  */
-export function deriveTrustTier(s: { isOfficial?: boolean; isVerified?: boolean; qualityScore?: number | null; safetyScore?: number | null }): TrustTier {
+export function deriveTrustTier(s: {
+  isOfficial?: boolean;
+  isVerified?: boolean;
+  qualityScore?: number | null;
+  safetyScore?: number | null;
+  repositoryUrl?: string | null;
+  installCommand?: string | null;
+  remoteUrl?: string | null;
+}): TrustTier {
   const q = s.qualityScore ?? 0;
   let tier: TrustTier;
-  if ((s.isOfficial || s.isVerified) && q >= 80) tier = 'verified';
-  else if (q >= 70) tier = 'trusted';
-  else if (q >= 40) tier = 'community';
+  if (s.isVerified || (s.isOfficial && q >= 80)) tier = 'verified';
+  else if (q >= 60 && s.repositoryUrl && (s.installCommand || s.remoteUrl)) tier = 'trusted';
+  else if (q >= 30) tier = 'community';
   else tier = 'unverified';
   const safety = s.safetyScore;
   if (typeof safety === 'number') {
@@ -183,15 +197,20 @@ export function normalizeIndexServer(s: any, source = 'mcp-index'): IndexServer 
   const npmPackage = str(s.npmPackage) ?? str(s.npm_package);
   const runnableNpm = npmPackageName(npmPackage);
   const remote = pickRemote(s.remotes ?? s.metadata?.remotes);
-  const safetyScore = num(s.safetyScore) ?? num(s.safety_score);
-  const band = s.safetyBand ?? s.safety_band;
+  // mcprating.io's safety score is a heuristic over repository and package metadata, and a row added
+  // since its last scoring pass can read 100 without having been assessed; its quality is still 0. So
+  // without a quality score there's no safety score either. The band is worked out here from the score
+  // (the index's thresholds), not read from `safetyBand`, which has no published contract.
+  const quality = num(s.qualityScore) ?? num(s.quality_score);
+  const safetyScore = quality ? num(s.safetyScore) ?? num(s.safety_score) : null;
+  const delisted = str(s.delistedReason) ?? str(s.delisted_reason);
   const out: IndexServer = {
     id: s.slug || s.id || s.name,
     slug: s.slug || s.id || s.name,
     name: s.name || s.slug || 'Unknown',
     description: s.description || '',
     category: s.category?.slug || s.category?.name || (typeof s.category === 'string' ? s.category : undefined),
-    qualityScore: num(s.qualityScore) ?? num(s.quality_score),
+    qualityScore: quality,
     uiType: s.uiType ?? s.ui_type ?? null,
     supportsUi: s.supportsUi ?? s.supports_ui ?? undefined,
     supportsDiscovery: s.supportsDiscovery ?? s.hasDiscovery ?? undefined,
@@ -208,13 +227,19 @@ export function normalizeIndexServer(s: any, source = 'mcp-index'): IndexServer 
     installCommand: str(s.installCommand) ?? str(s.install_command) ?? (runnableNpm ? `npx -y ${runnableNpm}` : null),
     repositoryUrl: str(s.repositoryUrl) ?? str(s.repository_url),
     safetyScore,
-    safetyBand: band === 'safe' || band === 'caution' || band === 'risk' ? band : safetyScore != null ? bandOf(safetyScore) : null,
-    safetyFlags: Array.isArray(s.safetyFlags) ? s.safetyFlags.filter((f: unknown) => typeof f === 'string') : [],
+    safetyBand: safetyScore != null ? bandOf(safetyScore) : null,
+    safetyFlags: safetyScore != null && Array.isArray(s.safetyFlags) ? s.safetyFlags.filter((f: unknown) => typeof f === 'string') : [],
     startTest: startTestOf(s),
+    ...(delisted ? { delisted } : {}),
     source,
   };
   const tier = sourceTier(s.trustTier ?? s.trust_tier);
-  if (tier) {
+  if (delisted) {
+    // The list and search drop delisted rows, but the slug routes (getServer) return them, still with
+    // their old tier. The gateway treats them as unverified, and so does Surge.
+    out.trustTier = 'unverified';
+    out.tierBasis = 'source';
+  } else if (tier) {
     out.trustTier = tier;
     out.tierBasis = 'source';
   } else if (out.qualityScore != null) {
@@ -355,6 +380,7 @@ export class DiscoveryClient {
     if (!base) return this.fromRegistry(this.registryUrl, q, {});
     try {
       const p = new URLSearchParams();
+      // mcprating.io's parameters are `search` and `sortBy`; `q` and `sort` are ignored, not rejected.
       if (q.search) p.set('search', q.search);
       if (q.category) p.set('category', q.category);
       p.set('sortBy', q.sortBy || 'quality');
@@ -364,7 +390,19 @@ export class DiscoveryClient {
       if (q.minScore != null) p.set('minScore', String(q.minScore));
       if (q.requiresAuth != null) p.set('requiresAuth', String(q.requiresAuth));
       if (q.isOfficial != null) p.set('isOfficial', String(q.isOfficial));
-      const res = await fetch(`${base}/api/v1/servers?${p.toString()}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+      const get = () => fetch(`${base}/api/v1/servers?${p.toString()}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+      let res = await get();
+      // An index without the start-test order (older than 2026-11-11) rejects sortBy=tested: use quality.
+      if (res.status === 400 && p.get('sortBy') === 'tested') {
+        p.set('sortBy', 'quality');
+        res = await get();
+      }
+      // A 400 is the index answering, not being down (an unknown category, say): no fallback.
+      if (res.status === 400) {
+        const body: any = await res.json().catch(() => null);
+        const why = typeof body?.error === 'string' ? body.error.slice(0, 160) : 'it rejected the query';
+        return { servers: [], total: 0, from: { kind: 'index', url: base, note: `The directory didn't accept this search: ${why}` } };
+      }
       if (res.ok) {
         const data: any = await res.json();
         const items: any[] | null = Array.isArray(data?.data) ? data.data : Array.isArray(data?.servers) ? data.servers : null;
