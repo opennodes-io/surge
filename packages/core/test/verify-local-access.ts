@@ -68,11 +68,15 @@ async function main() {
     json(res, 200, { capabilities: ['completion', 'tools'] });
   });
   const ownPeerSeen: string[] = [];
-  const ownPeer = await serve((req, _body, res) => {
+  const ownPeer = await serve((req, body, res) => {
     ownPeerSeen.push(String(req.url));
     if (req.url === '/api/tags') return json(res, 200, { models: [{ name: 'box:3b', details: {} }] });
+    if (req.url === '/v1/chat/completions') {
+      return json(res, 200, { choices: [{ index: 0, message: { role: 'assistant', content: `lan:${body.model}` }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+    }
     json(res, 200, { capabilities: ['completion'] });
   });
+  const freePort = () => new Promise<number>((resolve) => { const s = http.createServer().listen(0, '127.0.0.1', () => { const p = (s.address() as AddressInfo).port; s.close(() => resolve(p)); }); });
 
   const router: any = await startOllamaRouter({ port: 0, host: '127.0.0.1', ollama: ollama.origin, registry: null, mdns: false, log: () => {} });
   const token: string = router.token ?? '';
@@ -132,6 +136,19 @@ async function main() {
   check('a LAN peer the user added is listed, marked unpinned, and left out of Auto (private)',
     !!box?.description.includes('not pinned, so Auto (private) skips it') && models[0].description.startsWith('Picks one of 2 models'),
     `${box?.description} | ${models[0].description}`);
+  const lanAnswer = await ai.chat([{ role: 'user', content: 'hi' }], box?.id ?? 'private:none').then((r) => r.content, (e: any) => `error: ${e?.message ?? e}`);
+  check('…and answers when picked by name', lanAnswer === 'lan:box:3b', lanAnswer);
+
+  // A peer saved in Settings that is offline today must not stop private mode from starting.
+  const offline = `http://127.0.0.1:${await freePort()}`;
+  const router2: any = await startOllamaRouter({ port: 0, host: '127.0.0.1', ollama: ollama.origin, peers: [offline], registry: null, mdns: false, log: () => {} })
+    .catch((e: any) => e);
+  const started = !(router2 instanceof Error);
+  const ai2 = new AiService(port_);
+  if (started) ai2.setPrivateRouter({ origin: router2.origin, token: router2.token });
+  const ids2 = started ? (await ai2.listModels()).map((m) => m.id) : [];
+  check('a saved LAN peer that is offline doesn\x27t stop private mode', started && ids2.includes('private:tiny:1b'), started ? ids2.join() : String(router2?.message));
+  if (started) await router2.close();
 
   await router.close();
   for (const m of [ollama, attacker, ownPeer]) { m.server.closeAllConnections(); m.server.close(); }
@@ -144,7 +161,7 @@ async function main() {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
 
-  const free = await new Promise<number>((resolve) => { const s = http.createServer().listen(0, '127.0.0.1', () => { const p = (s.address() as AddressInfo).port; s.close(() => resolve(p)); }); });
+  const free = await freePort();
   const hubSettings: Record<string, any> = { 'hub.enabled': true, 'hub.allowActions': true, 'hub.port': free };
   const settingsPort: SettingsPort = { get: (k: string) => hubSettings[k] ?? null, set: (k: string, v: any) => { hubSettings[k] = v; }, getMaxConnections: () => 25 };
   const secretMap = new Map<string, string>();
@@ -263,15 +280,51 @@ async function main() {
   asked[8].answer('allow');
   await call;
 
+  // The app's own request timeout: the SDK sends notifications/cancelled on another POST and keeps its connection.
+  openPage = 'https://slow.example';
+  const timedOut = await app.callTool({ name: 'browser__clickElement', arguments: { selector: '#slow' } }, undefined, { timeout: 1500 })
+    .then(() => 'answered', (e: any) => String(e?.message ?? e));
+  check('an app whose request times out takes its card with it', /timed out/i.test(timedOut) && await waitFor(() => asked[9]?.signal.aborted === true)
+    && ran.filter((n) => n === 'clickElement').length === 4, timedOut);
+
+  // The page moves to another site while the card waits: the Allow was for the first one.
+  openPage = 'https://first.example';
+  call = app.callTool({ name: 'browser__clickElement', arguments: { selector: '#moved' } });
+  await waitFor(() => asked.length === 11);
+  openPage = 'https://second.example';
+  asked[10].answer('allow');
+  res = await call;
+  check('the page moved while the card waited: it doesn\x27t run', res.isError === true && text(res).includes('second.example')
+    && ran.filter((n) => n === 'clickElement').length === 4, text(res));
+
+  // A card still open when approvals are forgotten (actions toggled, a new token) can't add its site back.
+  openPage = 'https://kept.example';
+  call = app.callTool({ name: 'browser__clickElement', arguments: { selector: '#k1' } });
+  await waitFor(() => asked.length === 12);
+  hub.forgetApprovals();
+  asked[11].answer('allow');
+  await call;
+  call = app.callTool({ name: 'browser__clickElement', arguments: { selector: '#k2' } });
+  check('a card from before approvals were forgotten doesn\x27t add its site back', await waitFor(() => asked.length === 13) && asked[12].req.scope.label === 'kept.example');
+  asked[12].answer('deny');
+  await call;
+
+  res = await app.callTool({ name: `nope__${'x'.repeat(500)}`, arguments: {} });
+  check('an unknown tool is refused as unknown', res.isError === true && text(res).startsWith('Unknown tool'));
+  res = await app.callTool({ name: 'browser__notATool', arguments: {} });
+  check('…on an exposed server too (not "it\x27s off")', res.isError === true && text(res).startsWith('Unknown tool'), text(res));
+
   const wrong = await connect('not-the-token').then(() => 'connected', (e: any) => String(e?.message ?? e));
   check('a wrong token is refused', wrong !== 'connected', wrong.slice(0, 80));
 
   await Promise.all(logging);
   const log = (await store.hubCalls.list({ limit: 50 })).reverse();
-  const decisions = log.map((e) => `${e.tool.split('__')[1]}:${e.decision}`).join(' ');
+  const decisions = log.map((e) => `${e.tool.length > 40 ? 'long' : e.tool.split('__')[1]}:${e.decision}`).join(' ');
   check('every call is logged with what the user decided', decisions ===
     'getPageContent:read clickElement:allowed clickElement:remembered navigateTo:declined clickElement:allowed evaluateScript:allowed evaluateScript:declined '
-    + 'bookmark_list:read bookmark_add:allowed fillInput:cancelled clickElement:actions-off clickElement:actions-off clickElement:allowed', decisions);
+    + 'bookmark_list:read bookmark_add:allowed fillInput:cancelled clickElement:actions-off clickElement:actions-off clickElement:allowed '
+    + 'clickElement:cancelled clickElement:page-changed clickElement:allowed clickElement:declined long:unknown notATool:unknown', decisions);
+  check('…with a caller\x27s long tool name clipped', log.every((e) => e.tool.length <= 120));
   check('…with the site, and whether it ran', log[1].scope === 'shop.example' && log[1].ok === true && log[3].scope === 'bank.example' && log[3].ok === null);
   const logText = JSON.stringify(log);
   check('…but never the arguments (typed text can be a password)', !logText.includes('hunter2') && !logText.includes('document.cookie') && !logText.includes('#buy'));

@@ -142,9 +142,10 @@ export interface OnpCallEntry extends SyncMeta {
  * What happened to a call another app made through the Surge hub:
  * read (ran without asking) · allowed (on the card) · remembered (allowed earlier for that site) ·
  * declined · no-answer (timed out, or the window closed) · cancelled (the app went away first) ·
+ * page-changed (allowed, but the page had moved to another site, so it didn't run) ·
  * actions-off (refused: actions aren't allowed) · unknown (no such tool).
  */
-export type HubDecision = 'read' | 'allowed' | 'remembered' | 'declined' | 'no-answer' | 'cancelled' | 'actions-off' | 'unknown';
+export type HubDecision = 'read' | 'allowed' | 'remembered' | 'declined' | 'no-answer' | 'cancelled' | 'page-changed' | 'actions-off' | 'unknown';
 
 /** One call through the Surge hub. Arguments are not kept. */
 export interface HubCallEntry extends SyncMeta {

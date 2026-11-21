@@ -1,6 +1,7 @@
 import { app, BaseWindow, WebContentsView, ipcMain, globalShortcut, Tray, Menu, nativeImage, screen } from 'electron';
 import path from 'path';
 import { registerIpcHandlers } from './ipc-handlers';
+import { hubApprovalsWaiting } from './services/surge-hub-ipc';
 
 let mainWindow: BaseWindow | null = null;
 let appView: WebContentsView | null = null;
@@ -139,6 +140,8 @@ function setupTray(): void {
 // Window resize handler
 ipcMain.on('window:resize', (_event, mode: 'compact' | 'expanded') => {
   if (!mainWindow || !appView) return;
+  // A Surge hub card is waiting: the 160px bar would hide it (closing the picker or History asks for it).
+  if (mode === 'compact' && hubApprovalsWaiting()) return;
 
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width: screenW, height: screenH } = primaryDisplay.workAreaSize;

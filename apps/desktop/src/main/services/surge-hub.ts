@@ -2,7 +2,7 @@ import http from 'node:http';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, CancelledNotificationSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
   toolWireName,
   READ_ONLY_TOOLS,
@@ -86,6 +86,10 @@ export class SurgeHub {
   private memoryToken: string | null = null;
   // Sites (and bookmarks) the user allowed for apps using the hub. Never shared with a chat's.
   private allowed = new Set<string>();
+  // Calls waiting on a card, by JSON-RPC request id. The hub is stateless, so the notifications/cancelled
+  // a client sends when its own request times out arrives on another POST. Ids are per client, so two
+  // apps can share one: a cancel then also cancels the other's card, which only fails safe.
+  private waiting = new Map<string | number, Set<AbortController>>();
 
   constructor(private mcp: McpManager, private settings: HubSettings, private secrets: HubSecrets, private opts: HubOptions) {}
 
@@ -106,9 +110,12 @@ export class SurgeHub {
     return this.newToken();
   }
 
-  /** The next action on any site asks again (hub restart, actions turned off or on, new token). */
+  /**
+   * The next action on any site asks again (hub restart, actions turned off or on, new token). A new
+   * set, so a card still open from before can't add its site back when it's allowed.
+   */
   forgetApprovals(): void {
-    this.allowed.clear();
+    this.allowed = new Set();
   }
 
   private newToken(): string {
@@ -123,14 +130,14 @@ export class SurgeHub {
     return this.secrets.available();
   }
 
-  /** The tools a connected app may see and call, namespaced like the chat's ("server__tool"). */
-  private tools(): Array<{ name: string; description: string; inputSchema: any }> {
+  /** The tools a connected app may see and call, namespaced like the chat's ("server__tool"); `all`: actions too, even when off. */
+  private tools(all = false): Array<{ name: string; description: string; inputSchema: any }> {
     const out: Array<{ name: string; description: string; inputSchema: any }> = [];
     for (const server of this.mcp.getConnectedServers()) {
       if (!EXPOSED_SERVERS.includes(server.id) || server.status !== 'connected') continue;
       for (const tool of server.tools) {
         const name = toolWireName(server.id, tool.name);
-        if (!this.allowActions && !READ_ONLY_TOOLS.has(name)) continue;
+        if (!all && !this.allowActions && !READ_ONLY_TOOLS.has(name)) continue;
         out.push({ name, description: `[Surge ${server.name}] ${tool.description}`, inputSchema: tool.inputSchema || { type: 'object', properties: {} } });
       }
     }
@@ -210,17 +217,17 @@ export class SurgeHub {
   }
 
   private record(entry: Omit<HubCallInput, 'at'> & { at?: number }): void {
-    try { this.opts.log?.({ at: Date.now(), ...entry }); } catch { /* the log is best effort */ }
+    // The tool name is the caller's (an unknown one included), so it's clipped.
+    try { this.opts.log?.({ at: Date.now(), ...entry, tool: entry.tool.slice(0, 120) }); } catch { /* the log is best effort */ }
   }
 
   /** One tools/call from another app: refused, run freely (read), or run once the user allows it. */
   private async callTool(name: string, args: Record<string, unknown>, signal: AbortSignal) {
     const at = Date.now();
     const parsed = this.mcp.parseToolName(name);
-    const exposedServer = EXPOSED_SERVERS.some((s) => name.startsWith(`${s}__`));
     const riskOfName = parsed ? hubToolRisk(parsed.serverId, parsed.toolName) : READ_ONLY_TOOLS.has(name) ? 'read' : 'action';
     if (!parsed || !this.tools().some((t) => t.name === name)) {
-      const off = exposedServer && !READ_ONLY_TOOLS.has(name);
+      const off = this.tools(true).some((t) => t.name === name);
       this.record({ at, tool: name, risk: riskOfName, scope: null, decision: off ? 'actions-off' : 'unknown', ok: null, durationMs: null });
       return {
         isError: true,
@@ -250,9 +257,17 @@ export class SurgeHub {
       if (answer === 'cancelled') return refuse('cancelled', 'Cancelled: the request ended before the user answered.');
       return refuse('no-answer', `The user didn't answer in Surge, so ${parsed.toolName} didn't run. Don't retry it unasked.`);
     }
-    // Things that can change while the card waits: the app gave up, or the user turned actions off.
+    // Things that can change while the card waits: the app gave up, the user turned actions off, or
+    // the page moved on, so the action would land on a site the card didn't name.
     if (signal.aborted) return refuse('cancelled', 'Cancelled: the request ended before the action ran.');
     if (risk !== 'read' && !this.allowActions) return refuse('actions-off', declinedMessage(`${parsed.toolName}: actions were turned off`));
+    const askedAbout = scope as ApprovalScope | null;
+    if (decision.asked && askedAbout) {
+      const now = this.scopeOf(parsed.serverId, parsed.toolName, args);
+      if (now.key !== askedAbout.key) {
+        return refuse('page-changed', `The page moved to ${now.label} while the user was deciding about ${askedAbout.label}, so ${parsed.toolName} didn't run.`);
+      }
+    }
 
     const d: HubDecision = risk === 'read' ? 'read' : decision.asked ? 'allowed' : 'remembered';
     const started = Date.now();
@@ -291,8 +306,24 @@ export class SurgeHub {
 
     const mcp = new Server({ name: 'surge', version: this.opts.version }, { capabilities: { tools: {} } });
     mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: this.tools() }));
-    mcp.setRequestHandler(CallToolRequestSchema, async (request) =>
-      this.callTool(request.params.name, (request.params.arguments ?? {}) as Record<string, unknown>, gone.signal));
+    mcp.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      const cancel = new AbortController();
+      const id = extra.requestId;
+      let calls = this.waiting.get(id);
+      if (!calls) this.waiting.set(id, (calls = new Set()));
+      calls.add(cancel);
+      try {
+        return await this.callTool(request.params.name, (request.params.arguments ?? {}) as Record<string, unknown>, AbortSignal.any([gone.signal, cancel.signal]));
+      } finally {
+        calls.delete(cancel);
+        if (!calls.size) this.waiting.delete(id);
+      }
+    });
+    // A client that gave up on a request (its timeout) says so in a separate POST.
+    mcp.setNotificationHandler(CancelledNotificationSchema, async (note) => {
+      const id = note.params.requestId;
+      if (id !== undefined) for (const call of this.waiting.get(id) ?? []) call.abort();
+    });
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

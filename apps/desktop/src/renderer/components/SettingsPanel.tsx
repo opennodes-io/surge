@@ -7,7 +7,7 @@ import './SettingsPanel.css';
 // What happened to each call in the hub log.
 const HUB_DECISIONS: Record<HubCall['decision'], string> = {
   read: 'Read', allowed: 'Allowed by you', remembered: 'Allowed (site allowed earlier)', declined: 'Declined by you',
-  'no-answer': 'No answer', cancelled: 'Cancelled by the app', 'actions-off': 'Refused: actions off', unknown: 'Unknown tool',
+  'no-answer': 'No answer', cancelled: 'Cancelled by the app', 'page-changed': 'Not run: the page changed', 'actions-off': 'Refused: actions off', unknown: 'Unknown tool',
 };
 
 interface SettingsPanelProps {

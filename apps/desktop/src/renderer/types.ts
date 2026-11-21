@@ -218,7 +218,7 @@ export interface HubCall {
   tool: string;
   risk: 'read' | 'action' | 'script';
   scope: string | null;
-  decision: 'read' | 'allowed' | 'remembered' | 'declined' | 'no-answer' | 'cancelled' | 'actions-off' | 'unknown';
+  decision: 'read' | 'allowed' | 'remembered' | 'declined' | 'no-answer' | 'cancelled' | 'page-changed' | 'actions-off' | 'unknown';
   ok: boolean | null;
   durationMs: number | null;
 }

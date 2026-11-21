@@ -8,6 +8,12 @@ import type { SecretStore } from './secret-store';
 // No answer in 5 minutes counts as no; most apps give up sooner, and then the card goes away.
 const APPROVAL_TIMEOUT_MS = 5 * 60_000;
 
+// Cards waiting for an answer, by request id.
+const pending = new Map<string, (allow: boolean) => void>();
+
+/** Whether a hub card is waiting: the window then keeps its expanded size (main.ts ignores "compact"). */
+export const hubApprovalsWaiting = (): boolean => pending.size > 0;
+
 export interface HubUi {
   /** The open page's origin, for the site an action acts on. */
   pageOrigin: () => string | null;
@@ -17,8 +23,6 @@ export interface HubUi {
 
 /** Creates the hub, starts it if enabled, and wires its IPC (Settings → Advanced → Surge hub, the cards). */
 export function registerHubHandlers(mcp: McpManager, settings: SettingsService, secrets: SecretStore, ui: HubUi): SurgeHub {
-  const pending = new Map<string, (allow: boolean) => void>();
-
   const hub = new SurgeHub(mcp, settings, secrets, {
     version: app.getVersion(),
     pageOrigin: ui.pageOrigin,

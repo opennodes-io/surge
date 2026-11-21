@@ -97,16 +97,17 @@ Verification scripts for the ONP integration:
     - markup split across chunks never leaks, while plain text with `<` arrives whole;
     - the prompt uses signatures;
     - schema-echoed, fenced and unclosed calls are read, and an unreadable one is shown as text.
-- `packages/core/test/verify-local-access.ts` (in `pnpm test`): 38 checks, no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-local-access.ts`.
+- `packages/core/test/verify-local-access.ts` (in `pnpm test`): 46 checks, no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-local-access.ts`.
   - **Private router** (the real `@opennodes/ollama-router` with mock Ollama and peers):
     - A web page's `POST /router/peers` is refused, sent plain (no preflight) or as JSON. So is its preflight, and so is another local process without the token. The page's server is never probed.
     - `/router/catalog` needs the token. Pages can't list or prompt the models, and a rebinding Host is refused.
     - Surge still lists the private models (with `/api/show`'s "tools via prompt"), answers through the router, and never sends the token to Ollama.
-    - An unpinned LAN peer is listed but left out of Auto (private).
+    - An unpinned LAN peer is listed, left out of Auto (private), and answers when picked by name. A saved peer that is offline doesn't stop the router from starting.
   - **Surge hub** (the real `SurgeHub` behind the MCP SDK client):
     - A read runs free. An action waits for the card. Once per site; a different site asks; scripts ask every time.
     - Opening a page asks for the site it opens. Deny doesn't run the call.
-    - A client that disconnects cancels its card. Actions turned off while a card waits refuse the call.
+    - A client that disconnects cancels its card, and so does one whose request times out. Actions turned off while a card waits refuse the call. So does a page that moved to another site, and a card opened before approvals were forgotten can't add its site back.
+    - An unknown tool is answered as unknown, even on an exposed server, and a long tool name is clipped in the log.
     - Bookmarks writes ask. A wrong token is refused.
     - Every call is logged with its decision, and no arguments are kept.
 - `packages/core/test/verify-onp.ts`: a **local** registry with the fixture Echo node. Bundle it with esbuild (externals `@google/generative-ai @libsql/client @modelcontextprotocol/sdk openai`), then run it with node.
@@ -319,16 +320,18 @@ Verification scripts for the ONP integration:
       - Browser actions: the open page's site.
       - `navigateTo`: the site it opens, using `BrowserService.navigateTo`'s normalisation. An Allow for "the browser" must not free every later navigation.
       - Bookmarks: one scope.
-    - **Lifetime:** the hub keeps its own allowed set, never shared with a chat's. It clears when the hub restarts, actions are turned off or on, or the token is regenerated. The token is shared, so an Allow covers every app using the hub.
+    - **Lifetime:** the hub keeps its own allowed set, never shared with a chat's. It is replaced with a new one (so a late Allow on an older card can't add its site back) when the hub restarts, actions are turned off or on, or the token is regenerated. The token is shared, so an Allow covers every app using the hub.
     - **Code:** `SurgeHub` (`surge-hub.ts`) no longer imports Electron. `surge-hub-ipc.ts` wires it, and the test drives the real class.
     - **The card:**
       - `ask` sends `hub:approval` to the app UI and brings the window up (restoring it if minimized).
       - `App.tsx` draws `ApprovalCard from="hub"` in a `.hub-approvals` overlay above every view, Settings included. An idle window grows while a card waits.
       - The answer comes back through `hub:approve`. `hub:approvalDone` removes the card.
-      - No answer in 5 minutes, or a closed window: no-answer. The calling app disconnecting (the response's `close`): cancelled.
-      - An Allow after the app left, or after actions were turned off, doesn't run the call.
+      - No answer in 5 minutes, or a closed window: no-answer.
+      - Cancelled covers both ways an app gives up. It may disconnect (the response's `close`). Or its own request may time out: the SDK then sends `notifications/cancelled` on another POST and keeps the connection, and the hub matches it to waiting calls by JSON-RPC request id. Ids are per client, so a collision only cancels another app's card, which fails safe.
+      - An Allow doesn't run the call if the app left, actions were turned off, or the page moved to another site meanwhile (`page-changed`).
+      - While a card waits, main ignores `window:resize` 'compact' (`hubApprovalsWaiting`). Closing the picker or History would otherwise shrink the window back to the 160px bar under the card.
     - **Log:**
-      - The `hub_calls` table (`SurgeStore.hubCalls`, kept 90 days) records tool, risk, site, decision (`read / allowed / remembered / declined / no-answer / cancelled / actions-off / unknown`), whether it ran, and how long it took.
+      - The `hub_calls` table (`SurgeStore.hubCalls`, kept 90 days) records tool, risk, site, decision (`read / allowed / remembered / declined / no-answer / cancelled / page-changed / actions-off / unknown`), whether it ran, and how long it took.
       - Arguments are never kept: typed text can be a password.
       - Settings → Advanced → Surge hub → Recent calls shows the last 20 (`hub:calls`).
     - **Verified:**
@@ -338,6 +341,8 @@ Verification scripts for the ONP integration:
         - `evaluateScript` showed its code and "Run once", and Deny reached the app as declined;
         - a read ran in 38 ms with no card;
         - a bookmark save's card showed over Settings;
+        - from the idle 160px bar, the window grew to 700px with Allow in view, kept that size while History opened and closed, and went back to 160px after Deny;
+        - from a minimized window, the card restored it (visibility hidden → visible), and Allow saved the bookmark;
         - Recent calls listed all of them.
 - **Window layout** (`apps/desktop/src/main/main.ts`): `layoutViews()` is the only code that sizes the two views. With the page attached, the app UI gets a 400px column (half the window if narrower) and the page the rest; otherwise the app UI fills the window.
   - Every window or attach change calls it: `window:resize`, `resize`, maximize, `browser:show` and `browser:hide`.
