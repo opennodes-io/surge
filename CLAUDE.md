@@ -362,7 +362,11 @@ Verification for MCP discovery and stdio servers:
     - the asar's `node_modules`.
   - Of the alerted packages that is `electron`, the MCP SDK, `@hono/node-server` (the hub's transport), `zod` (via the SDK) and `fast-uri` (via ajv).
   - Installed but never bundled: the SDK's express and hono. The hub and the bookmarks server use `node:http`.
-  - Updated: SDK 1.32.2, `@hono/node-server` 2.1.11, fast-uri 3.1.9, and zod 4.6.7 (a major, in its own commit). The bookmarks server needed `z.record(z.string(), …)`, and its `tools/list` lost `additionalProperties: false`.
+  - Updated: SDK 1.32.2, fast-uri 3.1.9, and `@hono/node-server` 2.1.11.
+    - The `@hono/node-server` bump is a major. It is inside the SDK's own `^1.19.9 || ^2.0.5`, and v2 kept the public API. The pin-back option is 1.19.19.
+  - **zod 4.6.7** (commit `88794eb`, a major kept separate so it can be dropped). No zod 3 fix exists for its 2 high alerts.
+    - The bookmarks server needed `z.record(z.string(), …)`, and its `tools/list` lost `additionalProperties: false`.
+    - Without this commit, 108 alerts stay open, and zod's 2 highs are the only shipped ones outside Electron.
   - **`pnpm.overrides`** in the root `package.json` are keyed to the vulnerable range only, e.g. `fast-uri@>=3.0.0 <3.1.9`. pnpm applies a range key to every spec that *intersects* it, peers included, so don't add a key that overlaps another major or a `>=` peer (an esbuild one did and was dropped). Delete an override once its parent's own range moves past it.
   - **Left:**
     - Electron 35.7.5: 89 alerts, plus Chromium 134, out of support since 2025-09.
