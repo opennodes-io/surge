@@ -138,9 +138,12 @@
 .sp-discovery-name {
   font-size: var(--text-sm);
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Wraps rather than clipping: the tier badge must stay visible beside a long name. */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  overflow-wrap: anywhere;
 }
 
 .sp-discovery-desc {

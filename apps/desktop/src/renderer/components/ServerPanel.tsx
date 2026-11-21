@@ -290,7 +290,7 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
           {s.source === 'mcp-index' && (
             <>
               {' · '}
-              <button className="btn-link" style={{ background: 'none', border: 'none', color: 'var(--text-accent)', cursor: 'pointer', padding: 0 }} onClick={() => toggleSimilar(s.slug)}>
+              <button className="btn-link" style={{ background: 'none', border: 'none', color: 'var(--text-accent)', cursor: 'pointer', padding: 0, font: 'inherit' }} onClick={() => toggleSimilar(s.slug)}>
                 {similar[s.slug] ? 'hide similar' : 'similar'}
               </button>
             </>
