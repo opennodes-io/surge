@@ -17,7 +17,7 @@ import {
   type ToolExecutionResult,
 } from '@surge/core';
 import { SettingsService, SECRET_SETTINGS } from './services/settings-service';
-import { SecretStore } from './services/secret-store';
+import type { SecretStore } from './services/secret-store';
 import { getStore } from './services/store';
 import { startPrivateRouter, stopPrivateRouter, privateRouterStatus } from './services/private-router';
 import { BrowserService } from './services/browser-service';
@@ -45,8 +45,8 @@ const pendingApprovals = new Map<string, (allow: boolean) => void>();
 const chatApprovals = new Map<string, Set<string>>();
 const MAX_REMEMBERED_CHATS = 50;
 
-export function registerIpcHandlers(getBrowserView: () => WebContentsView | null, getAppUi: HubUi['appUi']): void {
-  const secretStore = new SecretStore();
+/** `secretStore` must already be open (`await SecretStore.open()`), so the first settings request can read it. */
+export function registerIpcHandlers(secretStore: SecretStore, getBrowserView: () => WebContentsView | null, getAppUi: HubUi['appUi']): void {
   settingsService = new SettingsService(secretStore);
   aiService = new AiService(settingsService, secretStore);
   // Spend ledger: every settled OpenNodes call is persisted for the dashboard (best effort).
@@ -102,7 +102,7 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   registerHubHandlers(mcpManager, settingsService, secretStore, { pageOrigin: () => browserService.pageOrigin(), appUi: getAppUi });
 
   // Copy text for the renderer (its sandbox has no reliable clipboard access).
-  ipcMain.handle('clipboard:writeText', (_e, text: string) => { clipboard.writeText(String(text ?? '')); return true; });
+  ipcMain.handle('clipboard:writeText', async (_e, text: string) => { await clipboard.writeText(String(text ?? '')); return true; });
 
   // What the chat's tool-call block shows: the server and the bare tool name from "server__tool".
   const toolLabels = (namespaced: string) => {
@@ -397,7 +397,7 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   }));
 
   ipcMain.handle('settings:set', async (_event, key: string, value: any) => {
-    settingsService.set(key, value);
+    await settingsService.set(key, value); // a provider key is on disk before the field clears
     if (key.startsWith('ai.') || key.startsWith('models.')) {
       aiService.refreshConfig();
     }
