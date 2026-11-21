@@ -14,6 +14,7 @@ import type {
   ChatMessage,
   OnpCallEntry,
   OnpSpendSummary,
+  HubCallEntry,
 } from './types.js';
 import { newId, now, toJson, parseJson, num, numOrNull, str, strOrNull, bool } from './util.js';
 
@@ -690,5 +691,56 @@ export class OnpCallsRepo extends BaseRepo {
         verified: num(r.verified), invalid: num(r.invalid), unreceipted: num(r.unreceipted),
       })),
     };
+  }
+}
+
+// ── Surge hub log ───────────────────────────────────────
+function mapHubCall(r: Row): HubCallEntry {
+  return {
+    id: String(r.id),
+    at: num(r.at),
+    tool: String(r.tool),
+    risk: str(r.risk) as HubCallEntry['risk'],
+    scope: strOrNull(r.scope),
+    decision: str(r.decision) as HubCallEntry['decision'],
+    ok: r.ok == null ? null : bool(r.ok),
+    durationMs: numOrNull(r.duration_ms),
+    createdAt: num(r.created_at),
+    updatedAt: num(r.updated_at),
+    deletedAt: numOrNull(r.deleted_at),
+    rev: num(r.rev),
+    originDeviceId: strOrNull(r.origin_device_id),
+  };
+}
+
+export type HubCallInput = Pick<HubCallEntry, 'at' | 'tool' | 'risk' | 'scope' | 'decision' | 'ok' | 'durationMs'>;
+
+/** How long the hub log keeps a call. */
+const HUB_LOG_DAYS = 90;
+
+export class HubCallsRepo extends BaseRepo {
+  async record(input: HubCallInput): Promise<HubCallEntry> {
+    const ts = now();
+    const id = newId();
+    await this.client.execute({
+      sql: `INSERT INTO hub_calls (id,at,tool,risk,scope,decision,ok,duration_ms,created_at,updated_at,rev,origin_device_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args: [id, input.at, input.tool, input.risk, input.scope, input.decision, input.ok == null ? null : input.ok ? 1 : 0,
+        input.durationMs, ts, ts, 1, this.deviceId],
+    });
+    await this.client.execute({ sql: 'DELETE FROM hub_calls WHERE at<?', args: [ts - HUB_LOG_DAYS * 86_400_000] });
+    return (await this.list({ limit: 1, id }))[0];
+  }
+
+  async list(opts: { limit?: number; id?: string } = {}): Promise<HubCallEntry[]> {
+    const where = ['deleted_at IS NULL'];
+    const args: (string | number)[] = [];
+    if (opts.id) { where.push('id=?'); args.push(opts.id); }
+    args.push(opts.limit ?? 100);
+    const rs = await this.client.execute({
+      sql: `SELECT * FROM hub_calls WHERE ${where.join(' AND ')} ORDER BY at DESC, created_at DESC LIMIT ?`,
+      args,
+    });
+    return rs.rows.map(mapHubCall);
   }
 }

@@ -81,6 +81,10 @@ declare global {
         configure: (cfg: { enabled?: boolean; port?: number; allowActions?: boolean }) => Promise<HubStatus>;
         token: () => Promise<string>;
         regenerateToken: () => Promise<string>;
+        approve: (id: string, allow: boolean) => Promise<boolean>;
+        onApproval: (callback: (data: ToolCallData) => void) => () => void;
+        onApprovalDone: (callback: (id: string) => void) => () => void;
+        calls: (limit?: number) => Promise<HubCall[]>;
       };
       clipboard: {
         writeText: (text: string) => Promise<boolean>;
@@ -182,7 +186,7 @@ export interface PrivateStatus {
   ollama: string;
   peers: string[];
   mdns: boolean;
-  discoveredPeers: Array<{ name: string; kind: string; origin: string }>;
+  discoveredPeers: Array<{ name: string; kind: string; origin: string; pinned: boolean }>;
   error?: string;
 }
 
@@ -205,6 +209,18 @@ export interface HubStatus {
   tools: string[];
   tokenPersisted: boolean;
   error?: string;
+}
+
+/** One call another app made through the hub (mirrors HubCallEntry from @surge/core/storage). */
+export interface HubCall {
+  id: string;
+  at: number;
+  tool: string;
+  risk: 'read' | 'action' | 'script';
+  scope: string | null;
+  decision: 'read' | 'allowed' | 'remembered' | 'declined' | 'no-answer' | 'cancelled' | 'page-changed' | 'actions-off' | 'unknown';
+  ok: boolean | null;
+  durationMs: number | null;
 }
 
 export const PRIVATE_AUTO_MODEL = 'private:auto-private';

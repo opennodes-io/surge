@@ -9,6 +9,7 @@ import {
   AgentsRepo,
   ChatRepo,
   OnpCallsRepo,
+  HubCallsRepo,
 } from './repos.js';
 
 export interface SurgeStoreOptions {
@@ -46,6 +47,7 @@ export class SurgeStore {
   readonly agents: AgentsRepo;
   readonly chat: ChatRepo;
   readonly onpCalls: OnpCallsRepo;
+  readonly hubCalls: HubCallsRepo;
 
   private constructor(client: Client, deviceId: string | null) {
     this.client = client;
@@ -58,6 +60,7 @@ export class SurgeStore {
     this.agents = new AgentsRepo(client, deviceId);
     this.chat = new ChatRepo(client, deviceId);
     this.onpCalls = new OnpCallsRepo(client, deviceId);
+    this.hubCalls = new HubCallsRepo(client, deviceId);
   }
 
   static async open(opts: SurgeStoreOptions = {}): Promise<SurgeStore> {

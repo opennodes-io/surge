@@ -249,8 +249,10 @@ export class AiService {
   private mistralClient: OpenAI | null = null;
   private vllmClient: OpenAI | null = null;
 
-  // Private mode: an embedded @opennodes/ollama-router (started by the shell) serving local + LAN models only
+  // Private mode: an embedded @opennodes/ollama-router (started by the shell) serving local + LAN models only.
+  // Its token opens the router's own API (/router/*); it stays in this process and goes only to the router.
   private privateRouter: string | null = null;
+  private privateRouterToken: string | null = null;
   private privateClient: OpenAI | null = null;
   // Whether each private model calls tools natively (Ollama's "tools" capability, via the router's
   // /api/show). false: Surge describes the tools in the prompt instead. Unknown models try natively.
@@ -469,10 +471,15 @@ export class AiService {
     return this.settings.get('private.enabled') === true;
   }
 
-  /** Point private mode at a running @opennodes/ollama-router (the shell starts it with no registry), or detach. */
-  setPrivateRouter(origin: string | null): void {
-    this.privateRouter = origin;
-    this.privateClient = origin ? new OpenAI({ apiKey: 'not-required', baseURL: `${origin}/v1`, maxRetries: 0 }) : null;
+  /**
+   * Point private mode at a running @opennodes/ollama-router (the shell starts it with no registry), or
+   * detach. The token is the router's: /router/* needs it. The model routes and /api/show serve Surge
+   * without it, as a local app (loopback, a local Host, no browser Origin).
+   */
+  setPrivateRouter(router: { origin: string; token: string } | null): void {
+    this.privateRouter = router?.origin ?? null;
+    this.privateRouterToken = router?.token ?? null;
+    this.privateClient = router ? new OpenAI({ apiKey: 'not-required', baseURL: `${router.origin}/v1`, maxRetries: 0 }) : null;
     this.privateToolSupport.clear();
   }
 
@@ -493,23 +500,36 @@ export class AiService {
     }
   }
 
-  /** The router's local and LAN models, led by its auto-private advisor model. */
+  /**
+   * The router's local and LAN models, led by its auto-private advisor model. Auto (private) uses this
+   * machine and LAN nodes pinned by their card key; other LAN peers can still be picked by name.
+   */
   async listPrivateModels(): Promise<AiModel[]> {
     if (!this.privateRouter) return [];
     try {
-      const res = await fetch(`${this.privateRouter}/router/catalog`, { signal: AbortSignal.timeout(ONP_FETCH_TIMEOUT_MS) });
+      const res = await fetch(`${this.privateRouter}/router/catalog`, {
+        headers: { authorization: `Bearer ${this.privateRouterToken ?? ''}` },
+        signal: AbortSignal.timeout(ONP_FETCH_TIMEOUT_MS),
+      });
+      if (!res.ok) return [];
       const catalog: any = await res.json();
-      const own: Array<{ name: string; tier: string; origin: string }> = (catalog.models ?? []).filter((m: any) => m.tier === 'local' || m.tier === 'lan');
+      const own: Array<{ name: string; tier: string; origin: string; pinned?: boolean }> =
+        (catalog.models ?? []).filter((m: any) => m.tier === 'local' || m.tier === 'lan');
+      const autoPool = own.filter((m) => m.tier === 'local' || m.pinned === true).length;
       const tools = await Promise.all(own.map((m) => this.probePrivateTools(m.name)));
       return [
         {
           id: PRIVATE_AUTO_MODEL, name: 'Auto (private)', provider: 'private',
-          description: `Picks one of ${own.length} model${own.length === 1 ? '' : 's'} on your machines per prompt · nothing leaves your network`,
+          description: `Picks one of ${autoPool} model${autoPool === 1 ? '' : 's'} on your machines per prompt · nothing leaves your network`,
           supportsToolCalling: true, level: 'smart', costEstimate: 'Free',
         },
         ...own.map((m, i): AiModel => ({
           id: `private:${m.name}`, name: m.name, provider: 'private',
-          description: `${m.tier.toUpperCase()} · ${m.origin}${tools[i] === false ? ' · tools via prompt' : ''}`,
+          description: [
+            `${m.tier.toUpperCase()} · ${m.origin}`,
+            m.tier === 'lan' && m.pinned !== true ? 'not pinned, so Auto (private) skips it' : '',
+            tools[i] === false ? 'tools via prompt' : '',
+          ].filter(Boolean).join(' · '),
           supportsToolCalling: tools[i] !== false, level: 'quick', costEstimate: 'Free',
         })),
       ];

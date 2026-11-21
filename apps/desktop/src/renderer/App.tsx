@@ -8,6 +8,7 @@ import McpWebPanel from './components/McpWebPanel';
 import AgentApprovalModal from './components/AgentApprovalModal';
 import HistoryPanel from './components/HistoryPanel';
 import ChannelsPanel from './components/ChannelsPanel';
+import ApprovalCard from './components/ApprovalCard';
 import { IconNewChat, IconHistory, IconShare, IconBolt, IconGlobe, IconSettings, IconMinus, IconX, IconMaximize, IconRestore } from './components/Icons';
 import { PRIVATE_AUTO_MODEL, ONP_AUTO_MODEL } from './types';
 import type { SocialChannel } from './types';
@@ -135,9 +136,26 @@ const App: React.FC = () => {
     return unsub;
   }, []);
 
+  // Actions other apps ask for through the Surge hub: cards over whatever the window shows, until
+  // answered, timed out, or the app goes away (hub:approvalDone).
+  const [hubApprovals, setHubApprovals] = useState<ToolCallData[]>([]);
+  useEffect(() => {
+    const offAsk = window.surge?.hub?.onApproval?.((data) => setHubApprovals((list) => [...list.filter((a) => a.id !== data.id), data]));
+    const offDone = window.surge?.hub?.onApprovalDone?.((id) => setHubApprovals((list) => list.filter((a) => a.id !== id)));
+    return () => { offAsk?.(); offDone?.(); };
+  }, []);
+  // The idle window is a 160px bar: it grows while a card waits.
+  const hadHubApprovals = useRef(false);
+  useEffect(() => {
+    const has = hubApprovals.length > 0;
+    if (has === hadHubApprovals.current) return;
+    hadHubApprovals.current = has;
+    if (mode === 'idle' && !showHistory && !showChannels) window.surge?.window?.resize(has ? 'expanded' : 'compact');
+  }, [hubApprovals.length, mode, showHistory, showChannels]);
+
   useEffect(() => {
     if (mode === 'idle') {
-      window.surge?.window?.resize('compact');
+      if (!hadHubApprovals.current) window.surge?.window?.resize('compact');
     } else {
       window.surge?.window?.resize('expanded');
     }
@@ -778,6 +796,14 @@ const App: React.FC = () => {
           </>
         )}
       </div>
+
+      {hubApprovals.length > 0 && (
+        <div className="hub-approvals" role="region" aria-label="Requests from apps using the Surge hub">
+          {hubApprovals.map((a) => (
+            <ApprovalCard key={a.id} data={a} from="hub" onAnswer={(allow) => window.surge.hub.approve(a.id, allow)} />
+          ))}
+        </div>
+      )}
     </div>
   );
 };
