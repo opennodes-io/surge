@@ -212,6 +212,25 @@ html, body {
   border: 1px solid rgba(236, 72, 153, 0.25);
 }
 
+/* Used for caution / risk (scores, tiers, safety); they had no rule before, so rendered unstyled. */
+.badge-yellow {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-orange);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.badge-red {
+  background: rgba(239, 68, 68, 0.13);
+  color: var(--accent-red);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.badge-muted {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
 /* ── Buttons ──── */
 .btn {
   display: inline-flex;

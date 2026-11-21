@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { IconBolt, IconSearch, IconX, IconPlug, IconChevronDown, IconChevronUp } from './Icons';
-import type { ConnectedServer, McpServerConfig, IndexServer, IndexCategory, DiscoveryQuery, SavedAgent, McpAuthStatus } from '../types';
+import { connectConfigFor } from '@surge/core/discovery';
+import type { ConnectedServer, McpServerConfig, IndexServer, IndexCategory, DiscoveryQuery, DiscoveryOrigin, SavedAgent, McpAuthStatus } from '../types';
 import './ServerPanel.css';
 
 interface ServerPanelProps {
@@ -24,6 +25,53 @@ function trustClass(tier?: string): string {
   }
 }
 
+const hostOf = (url?: string): string => {
+  try { return url ? new URL(url).host : ''; } catch { return url || ''; }
+};
+
+const SAFETY_CLASS: Record<string, string> = { safe: 'badge-green', caution: 'badge-yellow', risk: 'badge-red' };
+
+// The index's safety flags, in a few words (its own reasons are longer).
+const FLAG_LABELS: Record<string, string> = {
+  abandoned: 'abandoned',
+  stale: 'stale',
+  archived: 'archived repo',
+  deprecated: 'deprecated',
+  'no-license': 'no license',
+  'no-repository': 'no public repo',
+  'no-install-command': 'no install command',
+  'unverified-publisher': 'unverified publisher',
+  'install-script-risk': 'risky install script',
+  'possible-typosquat': 'possible typosquat',
+  'low-adoption': 'little use',
+};
+const flagLabel = (f: string) => FLAG_LABELS[f] || f.replace(/[-_]+/g, ' ');
+
+// The index's start test: did its harness start the server and list its tools.
+const START_TEST: Record<string, { label: string; cls: string }> = {
+  verified: { label: 'start test: passed', cls: 'badge-green' },
+  needs_credentials: { label: 'start test: needs credentials', cls: 'badge-yellow' },
+  failed_to_start: { label: 'start test: failed', cls: 'badge-red' },
+};
+
+/** One line under the section title: where these listings come from, and who runs that source. */
+function sourceNote(from: DiscoveryOrigin | null): { text: string; warn?: boolean } | null {
+  if (!from) return null;
+  const change = 'Change the source in Settings → Advanced.';
+  const host = hostOf(from.url);
+  if (from.kind === 'none') {
+    return { text: `Couldn't reach ${from.failed ? `${hostOf(from.failed)} or ` : ''}${host}. ${change}`, warn: true };
+  }
+  if (from.kind === 'registry') {
+    const what = host === 'registry.modelcontextprotocol.io' ? 'the official MCP Registry' : host;
+    return from.fallback
+      ? { text: `${hostOf(from.failed)} didn't answer, so these come from ${what} (listings only, no ratings).`, warn: true }
+      : { text: `Listings from ${what}, which doesn't rate servers. ${change}` };
+  }
+  if (host === 'mcprating.io') return { text: `Listings and ratings from mcprating.io, which has the same maintainer as Surge. ${change}` };
+  return { text: `Listings from ${host}. ${change}` };
+}
+
 const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
   const [servers, setServers] = useState<ConnectedServer[]>([]);
   // A connect in progress: its server, and the sign-in page while one is pending (OAuth).
@@ -35,6 +83,7 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
   }), []);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<IndexServer[]>([]);
+  const [origin, setOrigin] = useState<DiscoveryOrigin | null>(null);
   const [categories, setCategories] = useState<IndexCategory[]>([]);
   const [category, setCategory] = useState<string>('');
   const [sortBy, setSortBy] = useState<DiscoveryQuery['sortBy']>('quality');
@@ -76,8 +125,10 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
         limit: 24,
       });
       setResults(res.servers || []);
+      setOrigin(res.from || null);
     } catch {
       setResults([]);
+      setOrigin(null);
     }
     setIsSearching(false);
   }, [query, category, sortBy, hasUi, officialOnly]);
@@ -95,19 +146,9 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
     runDiscovery();
   }, [category, sortBy, hasUi, officialOnly]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const buildConnectConfig = (s: IndexServer): McpServerConfig => {
-    if (s.supportsDiscovery && s.discoveryUrl) {
-      return { id: s.slug, name: s.name, transport: 'sse', url: s.discoveryUrl };
-    }
-    let command = 'npx';
-    let args: string[] = ['-y', s.npmPackage || s.slug];
-    if (s.installCommand && /\s/.test(s.installCommand)) {
-      const parts = s.installCommand.trim().split(/\s+/);
-      command = parts[0];
-      args = parts.slice(1);
-    }
-    return { id: s.slug, name: s.name, transport: 'stdio', command, args };
-  };
+  // The listing's endpoint or install command; null when it gives neither (no command is made up
+  // from a name, which could run an unrelated package).
+  const buildConnectConfig = (s: IndexServer): McpServerConfig | null => connectConfigFor(s);
 
   const handleConnect = async (config: McpServerConfig) => {
     setConnectError('');
@@ -179,7 +220,52 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
   const uiBadge = (s: IndexServer) =>
     s.uiType ? <span className="badge badge-purple" style={{ fontSize: '0.55rem' }}>{s.uiType === 'mcp-apps' ? 'MCP Apps' : 'MCP-UI'}</span> : null;
 
-  const renderResult = (s: IndexServer) => (
+  const sourceHost = hostOf(origin?.url);
+  const indexName = sourceHost || 'the index';
+
+  const tierTitle = (s: IndexServer) =>
+    s.tierBasis === 'source'
+      ? `Trust tier from ${indexName}, capped by its safety score`
+      : 'Estimated by Surge from the quality score; the source sent no tier';
+
+  const startTestBadge = (s: IndexServer) => {
+    if (s.source !== 'mcp-index') return null; // only an index runs start tests
+    const t = s.startTest;
+    const known = t ? START_TEST[t.outcome] : undefined;
+    const when = t?.at ? ` on ${t.at.slice(0, 10)}` : '';
+    let title: string;
+    if (!t || !known) title = `${indexName} hasn't started this server${t?.outcome === 'unsupported' ? " (its harness can't test this transport)" : ''}`;
+    else if (t.outcome === 'verified') title = `${indexName}'s harness started it${when}${t.tools != null ? ` and listed ${t.tools} tools` : ''}`;
+    else title = `${indexName}'s harness tried it${when}: ${known.label.replace('start test: ', '')}`;
+    return (
+      <span className={`badge ${known?.cls || 'badge-muted'}`} title={title} style={{ fontSize: '0.55rem' }}>
+        {known?.label || 'start test: not run'}
+      </span>
+    );
+  };
+
+  // The evidence behind the tier: safety score and flags, and the start test.
+  const evidence = (s: IndexServer) => {
+    const flags = s.safetyFlags || [];
+    if (s.source !== 'mcp-index' && s.safetyScore == null && !flags.length) return null;
+    return (
+      <div className="sp-discovery-evidence">
+        {s.safetyScore != null && (
+          <span className={`badge ${SAFETY_CLASS[s.safetyBand || ''] || 'badge-muted'}`} title={`Safety score from ${indexName}: risk signals from public data, not a malware scan`} style={{ fontSize: '0.55rem' }}>
+            safety {Math.round(s.safetyScore)}
+          </span>
+        )}
+        {flags.map((f) => (
+          <span key={f} className="sp-flag" title={f}>{flagLabel(f)}</span>
+        ))}
+        {startTestBadge(s)}
+      </div>
+    );
+  };
+
+  const renderResult = (s: IndexServer) => {
+    const connect = buildConnectConfig(s);
+    return (
     <div key={s.slug} className="sp-discovery-result">
       <div className="sp-discovery-info">
         <div className="sp-discovery-name">
@@ -190,20 +276,25 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
             </span>
           )}
           {s.trustTier && (
-            <span className={`badge ${trustClass(s.trustTier)}`} style={{ marginLeft: 4, fontSize: '0.55rem' }}>{s.trustTier}</span>
+            <span className={`badge ${trustClass(s.trustTier)}`} title={tierTitle(s)} style={{ marginLeft: 4, fontSize: '0.55rem' }}>{s.trustTier}</span>
           )}
           {uiBadge(s)}
           {s.requiresAuth && <span className="badge badge-yellow" style={{ marginLeft: 4, fontSize: '0.55rem' }}>🔒 auth</span>}
         </div>
         <div className="sp-discovery-desc">{s.description}</div>
+        {evidence(s)}
         <div className="sp-discovery-source">
           {typeof s.stars === 'number' ? `★ ${s.stars}  ` : ''}
           {typeof s.weeklyDownloads === 'number' ? `⬇ ${s.weeklyDownloads}/wk  ` : ''}
-          {s.source}
-          {' · '}
-          <button className="btn-link" style={{ background: 'none', border: 'none', color: '#67e8f9', cursor: 'pointer', padding: 0 }} onClick={() => toggleSimilar(s.slug)}>
-            {similar[s.slug] ? 'hide similar' : 'similar'}
-          </button>
+          {s.source === 'mcp-registry' ? 'MCP Registry · not rated' : sourceHost || s.source}
+          {s.source === 'mcp-index' && (
+            <>
+              {' · '}
+              <button className="btn-link" style={{ background: 'none', border: 'none', color: 'var(--text-accent)', cursor: 'pointer', padding: 0 }} onClick={() => toggleSimilar(s.slug)}>
+                {similar[s.slug] ? 'hide similar' : 'similar'}
+              </button>
+            </>
+          )}
         </div>
         {similar[s.slug] && similar[s.slug].length > 0 && (
           <div className="sp-tools-list" style={{ marginTop: 4 }}>
@@ -213,11 +304,17 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
           </div>
         )}
       </div>
-      <button className="btn-primary btn-sm" onClick={() => handleConnect(buildConnectConfig(s))}>
+      <button
+        className="btn-primary btn-sm"
+        disabled={!connect}
+        title={connect ? (connect.url ? `Connect to ${connect.url}` : `Runs: ${[connect.command, ...(connect.args || [])].join(' ')}`) : 'The listing gives no install command or endpoint. Add the server under Manual Connect.'}
+        onClick={() => connect && handleConnect(connect)}
+      >
         <IconPlug size={13} /> Connect
       </button>
     </div>
-  );
+    );
+  };
 
   return (
     <div className="server-panel-overlay">
@@ -296,7 +393,11 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
         )}
 
         <div className="sp-section">
-          <div className="sp-section-title">Discover Servers (MCP Rating)</div>
+          <div className="sp-section-title">Discover Servers</div>
+          {(() => {
+            const note = sourceNote(origin);
+            return note ? <div className={`sp-source-note${note.warn ? ' warn' : ''}`}>{note.text}</div> : null;
+          })()}
           <div className="sp-discover-row">
             <input
               className="input"
@@ -326,7 +427,9 @@ const ServerPanel: React.FC<ServerPanelProps> = ({ onClose }) => {
             </label>
           </div>
 
-          {results.length === 0 && !isSearching && <div className="sp-empty">No results — try a search or start the MCP_Index registry.</div>}
+          {results.length === 0 && !isSearching && (
+            <div className="sp-empty">{origin?.note || (origin?.kind === 'none' ? 'No servers to show.' : 'No results. Try another search.')}</div>
+          )}
           {results.map(renderResult)}
         </div>
 
