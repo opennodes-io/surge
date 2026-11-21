@@ -257,3 +257,32 @@
   display: inline-block;
 }
 
+
+/* The hub log: what other apps did, and what the user decided */
+.hub-calls {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs, 0.72rem);
+  color: var(--text-secondary);
+}
+
+.hub-calls td {
+  padding: 3px 6px 3px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.hub-calls td:first-child {
+  white-space: nowrap;
+}
+
+.hub-decision.declined,
+.hub-decision.actions-off {
+  color: var(--accent-red);
+}
+
+.hub-decision.allowed,
+.hub-decision.remembered {
+  color: var(--accent-orange);
+}

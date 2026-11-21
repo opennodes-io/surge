@@ -242,7 +242,7 @@ app.whenReady().then(() => {
 
   createMainWindow();
   setupTray();
-  registerIpcHandlers(() => browserView);
+  registerIpcHandlers(() => browserView, () => ({ window: mainWindow, contents: appView?.webContents ?? null }));
 
   // Global shortcut to summon Surge
   globalShortcut.register('CommandOrControl+Shift+Space', () => {

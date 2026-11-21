@@ -42,6 +42,16 @@ export function toolRisk(serverId: string, toolName: string, tool?: Pick<McpTool
   return tool?.annotations?.readOnlyHint === true ? 'read' : 'action';
 }
 
+/**
+ * The Surge hub's risks: there another app drives the user's browser, so only the read-only tools
+ * run freely. Opening, scrolling and hovering ask too (unlike the chat, where the user watches).
+ */
+export function hubToolRisk(serverId: string, toolName: string): ToolRisk {
+  const name = `${serverId}__${toolName}`;
+  if (name === 'browser__evaluateScript') return 'script';
+  return READ_ONLY_TOOLS.has(name) ? 'read' : 'action';
+}
+
 /** What an approval covers: a site (the page's origin) or a server. */
 export interface ApprovalScope {
   key: string;

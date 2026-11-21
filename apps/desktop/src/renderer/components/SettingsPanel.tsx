@@ -1,8 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { IconX, IconSliders, IconBot, IconWrench, IconKey, IconCpu, IconNetwork, IconFile, IconPlug } from './Icons';
-import type { AiModel, ModelLevel, PrivateStatus, HubStatus } from '../types';
+import type { AiModel, ModelLevel, PrivateStatus, HubStatus, HubCall } from '../types';
 import SpendDashboard from './SpendDashboard';
 import './SettingsPanel.css';
+
+// What happened to each call in the hub log.
+const HUB_DECISIONS: Record<HubCall['decision'], string> = {
+  read: 'Read', allowed: 'Allowed by you', remembered: 'Allowed (site allowed earlier)', declined: 'Declined by you',
+  'no-answer': 'No answer', cancelled: 'Cancelled by the app', 'actions-off': 'Refused: actions off', unknown: 'Unknown tool',
+};
 
 interface SettingsPanelProps {
   selectedModel: string;
@@ -78,6 +84,8 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
   const [hubToken, setHubToken] = useState('');
   const [hubTokenShown, setHubTokenShown] = useState(false);
   const [hubPort, setHubPort] = useState('');
+  const [hubCalls, setHubCalls] = useState<HubCall[]>([]);
+  const loadHubCalls = () => { window.surge.hub.calls(20).then(setHubCalls).catch(() => {}); };
   const [copied, setCopied] = useState('');
 
   useEffect(() => {
@@ -94,6 +102,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
       setHub(hubStatus);
       setHubPort(String(hubStatus.port));
       if (hubStatus.enabled) setHubToken(await window.surge.hub.token());
+      loadHubCalls();
       setOllamaHost(await s.get('ai.ollamaHost') || 'http://localhost:11434');
       setVllmEndpoint(await s.get('ai.vllmEndpoint') || '');
       setVllmModel(await s.get('ai.vllmModel') || '');
@@ -567,7 +576,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                   </label>
                   <span className="settings-hint">
                     {hub.allowActions
-                      ? `${hub.tools.length} tools: reading and acting in the browser you're signed in to. Turn this off when you don't need it.`
+                      ? `${hub.tools.length} tools: reading and acting in the browser you're signed in to. Each action asks you first, once per site; a script asks every time. Turn this off when you don't need it.`
                       : `${hub.tools.length} read-only tools: the open page, your bookmarks and history.`}
                   </span>
                   <label style={{ marginTop: '8px' }}>Port</label>
@@ -576,6 +585,26 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                     <button className="btn-ghost btn-sm" disabled={hubPort === String(hub.port) || !/^\d{4,5}$/.test(hubPort)}
                       onClick={() => configureHub({ port: Number(hubPort) })}>Apply</button>
                   </div>
+                  <label style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    Recent calls
+                    <button className="btn-ghost btn-sm" onClick={loadHubCalls}>Refresh</button>
+                  </label>
+                  {hubCalls.length === 0
+                    ? <span className="settings-hint">No app has used the hub yet.</span>
+                    : (
+                      <table className="hub-calls">
+                        <tbody>
+                          {hubCalls.map(c => (
+                            <tr key={c.id}>
+                              <td>{new Date(c.at).toLocaleString()}</td>
+                              <td><code>{c.tool}</code></td>
+                              <td>{c.scope ?? ''}</td>
+                              <td className={`hub-decision ${c.decision}`}>{HUB_DECISIONS[c.decision] ?? c.decision}{c.ok === false ? ' (failed)' : ''}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
                   <label style={{ marginTop: '12px' }}>Connect an app</label>
                   {hubSnippets.map(sn => (
                     <div key={sn.id} className="hub-snippet">

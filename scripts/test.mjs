@@ -20,6 +20,7 @@ const tests = [
   ['packages/core', 'test/verify-keys-spend-private.ts', 'per-host keys, spend ledger, private mode'],
   ['packages/core', 'test/verify-live-ui.ts', 'Live UI: spec validation, tool result, form prompts'],
   ['packages/core', 'test/verify-approvals.ts', 'approvals: actions ask once per site per chat, scripts every time'],
+  ['packages/core', 'test/verify-local-access.ts', 'private router token and origin checks; hub actions ask first and are logged'],
   ['servers/bookmarks-history-mcp', 'test/smoke.ts', 'standalone bookmarks/history MCP server'],
 ];
 

@@ -138,6 +138,29 @@ export interface OnpCallEntry extends SyncMeta {
   advisor: Record<string, unknown> | null;
 }
 
+/**
+ * What happened to a call another app made through the Surge hub:
+ * read (ran without asking) · allowed (on the card) · remembered (allowed earlier for that site) ·
+ * declined · no-answer (timed out, or the window closed) · cancelled (the app went away first) ·
+ * actions-off (refused: actions aren't allowed) · unknown (no such tool).
+ */
+export type HubDecision = 'read' | 'allowed' | 'remembered' | 'declined' | 'no-answer' | 'cancelled' | 'actions-off' | 'unknown';
+
+/** One call through the Surge hub. Arguments are not kept. */
+export interface HubCallEntry extends SyncMeta {
+  id: string;
+  at: number;
+  /** Namespaced, as the app called it: "browser__clickElement". */
+  tool: string;
+  risk: 'read' | 'action' | 'script';
+  /** The site or data it acted on ("example.com"), when it needed an approval. */
+  scope: string | null;
+  decision: HubDecision;
+  /** Whether the tool ran without an error; null when it didn't run. */
+  ok: boolean | null;
+  durationMs: number | null;
+}
+
 /** Spend over a window, by UTC day and by node; `usd` sums what the budget counted. */
 export interface OnpSpendSummary {
   since: number;

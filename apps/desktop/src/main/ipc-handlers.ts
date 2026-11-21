@@ -23,7 +23,7 @@ import { startPrivateRouter, stopPrivateRouter, privateRouterStatus } from './se
 import { BrowserService } from './services/browser-service';
 import { registerLocalDataHandlers } from './services/local-data';
 import { registerAgentHandlers } from './services/agents';
-import { registerHubHandlers } from './services/surge-hub';
+import { registerHubHandlers, type HubUi } from './services/surge-hub-ipc';
 import { McpOAuth } from './services/mcp-oauth';
 import { registerChannelHandlers } from './services/channels';
 import { ElectronBrowserPort } from './services/electron-browser-port';
@@ -45,7 +45,7 @@ const pendingApprovals = new Map<string, (allow: boolean) => void>();
 const chatApprovals = new Map<string, Set<string>>();
 const MAX_REMEMBERED_CHATS = 50;
 
-export function registerIpcHandlers(getBrowserView: () => WebContentsView | null): void {
+export function registerIpcHandlers(getBrowserView: () => WebContentsView | null, getAppUi: HubUi['appUi']): void {
   const secretStore = new SecretStore();
   settingsService = new SettingsService(secretStore);
   aiService = new AiService(settingsService, secretStore);
@@ -98,8 +98,8 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   // ── Social channels: feeds read in the embedded browser with the user's own sign-in ──
   registerChannelHandlers();
 
-  // ── Surge hub: a local MCP server other AI apps can use (off by default) ──
-  registerHubHandlers(mcpManager, settingsService, secretStore);
+  // ── Surge hub: a local MCP server other AI apps can use (off by default); its actions ask first ──
+  registerHubHandlers(mcpManager, settingsService, secretStore, { pageOrigin: () => browserService.pageOrigin(), appUi: getAppUi });
 
   // Copy text for the renderer (its sandbox has no reliable clipboard access).
   ipcMain.handle('clipboard:writeText', (_e, text: string) => { clipboard.writeText(String(text ?? '')); return true; });
