@@ -6,6 +6,7 @@ export {
   deriveTrustTier,
   normalizeIndexServer,
   normalizeRegistryServer,
+  npmPackageName,
 } from './discovery-client.js';
 export type {
   IndexServer,

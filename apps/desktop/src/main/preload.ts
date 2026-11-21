@@ -86,7 +86,7 @@ contextBridge.exposeInMainWorld('surge', {
     disconnect: (serverId: string) => ipcRenderer.invoke('mcpweb:disconnect', serverId),
   },
 
-  // Discovery (MCP_Index registry, with quality ratings)
+  // Discovery (an index such as mcprating.io, with the official MCP Registry as the fallback)
   discovery: {
     list: (params: any) => ipcRenderer.invoke('discovery:list', params),
     get: (slug: string) => ipcRenderer.invoke('discovery:get', slug),

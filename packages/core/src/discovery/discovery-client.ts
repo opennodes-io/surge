@@ -143,6 +143,18 @@ function bandOf(score: number): SafetyBand {
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
+// Listing fields that become command-line arguments. Anyone can publish to the official registry, so a
+// name has to look like a package name and nothing else: not a flag (`--call=…`), a path, a URL, a
+// tarball or a GitHub `owner/repo` shorthand, all of which npx and uvx would also accept.
+const NPM_NAME = /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i;
+const PYPI_NAME = /^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$/i;
+const VERSION = /^[0-9][0-9a-z.+-]*$/i;
+/** An npm package name npx can only read as a registry package; null otherwise. */
+export function npmPackageName(v: unknown): string | null {
+  const s = str(v);
+  return s && s.length <= 214 && NPM_NAME.test(s) ? s : null;
+}
+
 /** The first hosted endpoint a listing offers that Surge can connect to without filling in a template. */
 function pickRemote(remotes: unknown): { url: string; transport: 'streamable-http' | 'sse'; needsAuth: boolean } | null {
   if (!Array.isArray(remotes)) return null;
@@ -169,6 +181,7 @@ function startTestOf(s: any): StartTest | null {
 /** One listing from a rating index (mcprating.io's `/api/v1/servers` shape). */
 export function normalizeIndexServer(s: any, source = 'mcp-index'): IndexServer {
   const npmPackage = str(s.npmPackage) ?? str(s.npm_package);
+  const runnableNpm = npmPackageName(npmPackage);
   const remote = pickRemote(s.remotes ?? s.metadata?.remotes);
   const safetyScore = num(s.safetyScore) ?? num(s.safety_score);
   const band = s.safetyBand ?? s.safety_band;
@@ -185,13 +198,14 @@ export function normalizeIndexServer(s: any, source = 'mcp-index'): IndexServer 
     discoveryUrl: s.discoveryUrl ?? s.discovery_url ?? null,
     remoteUrl: remote?.url ?? null,
     ...(remote ? { remoteTransport: remote.transport } : {}),
-    requiresAuth: s.requiresAuth ?? s.requires_auth ?? (remote?.needsAuth || undefined),
+    // mcprating.io sends requiresAuth: false beside an endpoint whose Authorization header it marks secret.
+    requiresAuth: !!(s.requiresAuth ?? s.requires_auth) || remote?.needsAuth || undefined,
     isOfficial: s.isOfficial ?? s.is_official ?? undefined,
     isVerified: s.isVerified ?? s.is_verified ?? undefined,
     stars: s.stars ?? undefined,
     weeklyDownloads: s.weeklyDownloads ?? s.weekly_downloads ?? undefined,
     npmPackage,
-    installCommand: str(s.installCommand) ?? str(s.install_command) ?? (npmPackage ? `npx -y ${npmPackage}` : null),
+    installCommand: str(s.installCommand) ?? str(s.install_command) ?? (runnableNpm ? `npx -y ${runnableNpm}` : null),
     repositoryUrl: str(s.repositoryUrl) ?? str(s.repository_url),
     safetyScore,
     safetyBand: band === 'safe' || band === 'caution' || band === 'risk' ? band : safetyScore != null ? bandOf(safetyScore) : null,
@@ -217,16 +231,20 @@ function slugOf(name: string): string {
 
 /** A command Surge can run for a registry package, or null (oci, nuget, mcpb and others aren't run). */
 function packageCommand(p: any): string | null {
-  const id = str(p?.identifier);
-  if (!id || /\s/.test(id)) return null;
   const transport = p?.transport?.type ?? 'stdio';
   if (transport !== 'stdio') return null;
   const version = str(p?.version);
   switch (p?.registryType) {
-    case 'npm':
-      return `npx -y ${version && version !== 'latest' ? `${id}@${version}` : id}`;
-    case 'pypi':
-      return `uvx ${id}`;
+    case 'npm': {
+      const id = npmPackageName(p?.identifier);
+      if (!id) return null;
+      if (!version || version === 'latest') return `npx -y ${id}`;
+      return VERSION.test(version) ? `npx -y ${id}@${version}` : null;
+    }
+    case 'pypi': {
+      const id = str(p?.identifier);
+      return id && PYPI_NAME.test(id) ? `uvx ${id}` : null;
+    }
     default:
       return null;
   }
@@ -246,7 +264,7 @@ export function normalizeRegistryServer(entry: any): IndexServer | null {
   const remote = pickRemote(s.remotes);
   const packages: any[] = Array.isArray(s.packages) ? s.packages : [];
   const runnable = packages.map((p) => ({ p, cmd: packageCommand(p) })).find((x) => x.cmd);
-  const npm = packages.find((p) => p?.registryType === 'npm' && str(p?.identifier));
+  const npm = packages.find((p) => p?.registryType === 'npm' && npmPackageName(p?.identifier));
   const needsSecret = (runnable ? [runnable.p] : []).some((p) =>
     (Array.isArray(p.environmentVariables) ? p.environmentVariables : []).some((e: any) => e?.isRequired && e?.isSecret));
   const slug = slugOf(name);
@@ -259,7 +277,7 @@ export function normalizeRegistryServer(entry: any): IndexServer | null {
     remoteUrl: remote?.url ?? null,
     ...(remote ? { remoteTransport: remote.transport } : {}),
     requiresAuth: remote?.needsAuth || needsSecret || undefined,
-    npmPackage: str(npm?.identifier),
+    npmPackage: npmPackageName(npm?.identifier),
     installCommand: runnable?.cmd ?? null,
     repositoryUrl: str(s.repository?.url),
     safetyFlags: [],

@@ -92,9 +92,9 @@ Verification scripts for the ONP integration:
 - `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
 
 Verification for MCP discovery and stdio servers:
-- `packages/core/test/verify-discovery.ts` (55 checks, in `pnpm test`): a mock index in mcprating.io's shape, a mock official registry and local stdio servers; no network. Covers:
+- `packages/core/test/verify-discovery.ts` (57 checks, in `pnpm test`): a mock index in mcprating.io's shape, a mock official registry and local stdio servers; no network. Covers:
   - the index: its own tier wins and its safety cap holds; safety, flags and the start test come through; no install command is made up; no request carries a partner key or any other key
-  - the official registry: the fallback on a closed port and on a 500, and a source of its own; the adapter (remotes, npm pinned, pypi via uvx, oci not run, templated endpoints and inactive or older entries skipped); filters it can't apply
+  - the official registry: the fallback on a closed port and on a 500, and a source of its own; the adapter (remotes, npm pinned, pypi via uvx, oci not run, templated endpoints and inactive or older entries skipped); filters it can't apply; identifiers and versions that npx or uvx would read as a flag, URL, tarball or `owner/repo` get no command
   - the desktop settings migration (only the old localhost:3000, only once), imported from `apps/desktop/src/main/services/settings-migrations.ts`
   - the stdio environment: a planted `FAKE_SECRET` doesn't reach a fixture server (`test/fixtures/env-echo-server.mjs`), nor after a saved-server restart; the built bookmarks server starts with `SURGE_DB_PATH` from its own `env`
 
@@ -287,6 +287,7 @@ Verification for MCP discovery and stdio servers:
       - only active, latest entries;
       - `remotes` become endpoints (templated URLs skipped);
       - npm runs as `npx -y id@version`, pypi as `uvx id`; oci, nuget and mcpb get no command.
+      - Anyone can publish there, so a name must look like a package name (`npmPackageName`, a PyPI pattern) and a version like a version. Otherwise there's no command, since `--call=…`, a URL, a tarball or `owner/repo` would also run.
       - It searches names only and rates nothing, so its entries have no tier. A filter it can't apply (category, UI, official, score) returns nothing, with a note.
     - The Settings field takes the registry too (`https://registry.modelcontextprotocol.io`, or any base ending in `/v0`). Empty means the registry alone. `mcp.registryUrl` (no UI) overrides the fallback; the tests use it.
     - `McpManager.discoverServers` (IPC `mcp:discover`) uses the same `DiscoveryClient`.
@@ -299,13 +300,15 @@ Verification for MCP discovery and stdio servers:
   - **No made-up commands.** A listing without a command, npm package or endpoint used to connect as `npx -y <slug>`, which runs whatever npm package has that name (or, for `owner/repo`, a GitHub repository).
     - `connectConfigFor` returns null for it, and Connect is disabled.
     - Hosted listings connect to their endpoint: 37 of mcprating.io's top 100 are remote-only.
+    - `requiresAuth` is true when the index says so **or** the endpoint has an Authorization (or required, or secret) header: the live API sends `requiresAuth: false` beside a secret Authorization header.
   - **Environment.** stdio servers got `{...process.env, ...config.env}`, so every variable in Surge's environment reached every server.
     - Now they get `stdioServerEnv`: the SDK's `getDefaultEnvironment()` plus `config.env`. On Windows that's APPDATA, HOMEDRIVE, HOMEPATH, LOCALAPPDATA, PATH, PROCESSOR_ARCHITECTURE, SYSTEMDRIVE, SYSTEMROOT, TEMP, USERNAME, USERPROFILE and PROGRAMFILES; elsewhere HOME, LOGNAME, PATH, SHELL, TERM and USER. On Windows, libuv also adds LOGONSERVER, USERDOMAIN and WINDIR.
-    - **Behaviour change:** a server that read a token from Surge's environment (a `GITHUB_TOKEN`, say) now needs it in its own `env`, and there's no UI for that yet (see the follow-ups).
+    - **Behaviour change:** a server that read something from Surge's environment now needs it in its own `env`, and there's no UI for that yet (see the follow-ups). That covers tokens (a `GITHUB_TOKEN`, say), and also proxy and CA settings (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`). So behind a proxy, `npx` and `uvx` downloads can fail. Say so in the 0.1.8 release notes.
   - `.badge-yellow` and `.badge-red` had no CSS rule, so caution and risk badges rendered unstyled. They're in `design-system.css` now.
   - **Verified:**
     - `verify-discovery.ts` (above).
     - On Windows, through `McpManager` with the scoped environment: `npx -y @modelcontextprotocol/server-everything` started (16 tools; echo answered), and `python` resolved from PATH, as `uvx.exe` would. `uvx` itself isn't installed on this machine, so it's untested.
+    - In the built Electron app, launched with `FAKE_SECRET` in its own environment, through `window.surge.mcp.connect`: the env-echo fixture (via `node` on PATH) saw only the safe list, its own `env` and libuv's three, and `npx -y` server-everything started.
     - In the app over CDP, with a throwaway profile seeded with the 0.1.7 value:
       - the stored `localhost:3000` was removed and mcprating.io applied;
       - the panel listed 24 servers from mcprating.io with tier, safety, flags, start test and the maintainer note;

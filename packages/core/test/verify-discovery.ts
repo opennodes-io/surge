@@ -71,6 +71,7 @@ const INDEX_ITEMS = [
     qualityScore: 80, trustTier: 'trusted', safetyScore: 92, safetyBand: 'safe', safetyFlags: [],
     metadata: { remotes: [{ type: 'streamable-http', url: 'https://mcp.example.com/mcp', headers: [{ name: 'Authorization', isSecret: true }] }] },
     verification: { latestOutcome: 'needs_credentials', lastAttemptedAt: '2026-11-02T00:00:00Z' },
+    requiresAuth: false, // what the live API sends beside a secret Authorization header
   },
   { // listed from GitHub with no way to run it: no command may be made up from the slug
     slug: 'io-github-someone-tool', name: 'someone/tool', description: 'Build it yourself', accessMethod: 'github-manual', installCommand: null,
@@ -78,6 +79,9 @@ const INDEX_ITEMS = [
   },
   { // an npm package but no command: npx -y <package>
     slug: 'pkg-only', name: 'pkg only', description: '', npmPackage: '@scope/pkg-only', installCommand: null, qualityScore: 75, trustTier: 'trusted',
+  },
+  { // an "npm package" that npx would read as a GitHub repo: no command
+    slug: 'gh-shorthand', name: 'gh shorthand', description: '', npmPackage: 'owner/repo', installCommand: null, qualityScore: 75, trustTier: 'trusted',
   },
 ];
 
@@ -112,6 +116,12 @@ const REGISTRY_ITEMS = [
   official('io.github.example/old', { remotes: [{ type: 'sse', url: 'https://old.example.com/sse' }] }, { status: 'deprecated' }),
   official('io.github.example/files', { version: '1.0.0', packages: [{ registryType: 'npm', identifier: '@scope/files', version: '1.0.0', transport: { type: 'stdio' } }] }, { isLatest: false }),
   official('io.github.example/weather', { title: 'Weather (dupe)', remotes: [{ type: 'sse', url: 'https://weather.example.com/sse' }] }),
+  // Anyone can publish: identifiers and versions that npx or uvx would read as something else.
+  official('io.github.evil/flag', { packages: [{ registryType: 'npm', identifier: '--call=calc.exe', transport: { type: 'stdio' } }] }),
+  official('io.github.evil/repo', { packages: [{ registryType: 'npm', identifier: 'owner/repo', transport: { type: 'stdio' } }] }),
+  official('io.github.evil/tarball', { packages: [{ registryType: 'npm', identifier: 'https://evil.example/x.tgz', transport: { type: 'stdio' } }] }),
+  official('io.github.evil/version', { packages: [{ registryType: 'npm', identifier: 'fine-pkg', version: '1.0.0 --call=calc.exe', transport: { type: 'stdio' } }] }),
+  official('io.github.evil/pypi', { packages: [{ registryType: 'pypi', identifier: '--from=git+https://evil.example/x', transport: { type: 'stdio' } }] }),
 ];
 const registrySeen: Seen[] = [];
 const registry = http.createServer((req, res) => {
@@ -160,11 +170,12 @@ const by = (list: IndexServer[], slug: string) => list.find((s) => s.slug === sl
   const hostedConnect = connectConfigFor(hosted);
   check('a hosted listing connects to its endpoint, not npx', hostedConnect?.transport === 'streamable-http' && hostedConnect.url === 'https://mcp.example.com/mcp' && !hostedConnect.command,
     JSON.stringify(hostedConnect));
-  check('an endpoint that takes an Authorization header needs a sign-in', hosted.requiresAuth === true);
+  check("an endpoint with a secret Authorization header needs a sign-in, though the index says requiresAuth: false", hosted.requiresAuth === true);
   const manual = by(s, 'io-github-someone-tool')!;
   check('a listing with no command or endpoint gets no Connect (no `npx -y <slug>`)', manual.installCommand === null && connectConfigFor(manual) === null,
     JSON.stringify({ installCommand: manual.installCommand, connect: connectConfigFor(manual) }));
   check('an npm package without a command runs as npx -y <package>', by(s, 'pkg-only')!.installCommand === 'npx -y @scope/pkg-only');
+  check("an npm package that npx would read as owner/repo gets no command", by(s, 'gh-shorthand')!.installCommand === null && connectConfigFor(by(s, 'gh-shorthand')!) === null);
 
   const cats = await client.listCategories();
   check('categories come from the index', cats.length === 1 && cats[0].slug === 'design-creative');
@@ -183,7 +194,12 @@ const by = (list: IndexServer[], slug: string) => list.find((s) => s.slug === sl
   check('the registry is asked for latest versions only, with the search', rq.pathname === '/v0/servers' && rq.searchParams.get('version') === 'latest' && rq.searchParams.get('search') === 'weather',
     rq.toString());
   const s = res.servers;
-  check('deprecated, older and duplicate entries are dropped', s.length === 5 && !by(s, 'io-github-example-old') && s.filter((x) => x.slug === 'io-github-example-weather').length === 1,
+  const EVIL = ['io-github-evil-flag', 'io-github-evil-repo', 'io-github-evil-tarball', 'io-github-evil-version', 'io-github-evil-pypi'];
+  check('a name or version that is a flag, a path, a URL or owner/repo gives no command',
+    EVIL.every((slug) => by(s, slug) && by(s, slug)!.installCommand === null && connectConfigFor(by(s, slug)!) === null)
+      && ['io-github-evil-flag', 'io-github-evil-repo', 'io-github-evil-tarball'].every((slug) => by(s, slug)!.npmPackage === null),
+    EVIL.map((slug) => `${slug}: ${by(s, slug)?.installCommand}`).join('; '));
+  check('deprecated, older and duplicate entries are dropped', s.length === 10 && !by(s, 'io-github-example-old') && s.filter((x) => x.slug === 'io-github-example-weather').length === 1,
     s.map((x) => x.slug).join());
   const weather = by(s, 'io-github-example-weather')!;
   check('a registry name becomes an id-safe slug; the title is the name shown', weather.id === 'io-github-example-weather' && weather.name === 'Weather');
@@ -203,14 +219,14 @@ const by = (list: IndexServer[], slug: string) => list.find((s) => s.slug === sl
   indexBroken = true;
   const broken = await new DiscoveryClient(indexBase, { registryUrl: registryBase }).listServers({});
   indexBroken = false;
-  check('an index answering 500 falls back too', broken.from.kind === 'registry' && broken.from.fallback === true && broken.servers.length === 5);
+  check('an index answering 500 falls back too', broken.from.kind === 'registry' && broken.from.fallback === true && broken.servers.length === 10);
 
   const before = indexSeen.length;
   const only = await new DiscoveryClient('', { registryUrl: registryBase }).listServers({});
-  check('an empty source means the registry alone (not a fallback)', only.from.kind === 'registry' && !only.from.fallback && only.servers.length === 5);
+  check('an empty source means the registry alone (not a fallback)', only.from.kind === 'registry' && !only.from.fallback && only.servers.length === 10);
   const direct = new DiscoveryClient(`${registryBase}/v0`, { registryUrl: 'http://127.0.0.1:9/unused' });
   const viaPath = await direct.listServers({ search: 'files' });
-  check('a source pointing at a /v0 registry is read as a registry', viaPath.from.kind === 'registry' && !viaPath.from.fallback && viaPath.servers.length === 5,
+  check('a source pointing at a /v0 registry is read as a registry', viaPath.from.kind === 'registry' && !viaPath.from.fallback && viaPath.servers.length === 10,
     JSON.stringify(viaPath.from));
   check('index-only calls ask nothing of a registry source', (await direct.getServer('x')) === null && (await direct.listCategories()).length === 0 && indexSeen.length === before);
   check('the official registry is recognized by its host', new URL(OFFICIAL_MCP_REGISTRY).hostname === 'registry.modelcontextprotocol.io');
@@ -225,7 +241,7 @@ const by = (list: IndexServer[], slug: string) => list.find((s) => s.slug === sl
   const store: Record<string, any> = { 'mcp.indexUrl': down, 'mcp.registryUrl': registryBase };
   const settings: SettingsPort = { get: (k) => store[k], set: (k, v) => { store[k] = v; }, getMaxConnections: () => 10 };
   const viaManager = await new McpManager(settings).discoverServers('weather');
-  check('McpManager.discoverServers falls back to the registry too', viaManager.length === 5 && viaManager.every((x) => x.source === 'mcp-registry' && typeof x.hasDiscovery === 'boolean'));
+  check('McpManager.discoverServers falls back to the registry too', viaManager.length === 10 && viaManager.every((x) => x.source === 'mcp-registry' && typeof x.hasDiscovery === 'boolean'));
   store['mcp.indexUrl'] = indexBase;
   const fromIndex = await new McpManager(settings).discoverServers('video');
   check('McpManager.discoverServers reads the index with its tiers', fromIndex.find((x) => x.slug === 'old-official')?.trustTier === 'community');
@@ -262,7 +278,9 @@ registry.close();
   const allowed = new Set([...DEFAULT_INHERITED_ENV_VARS, 'SURGE_TEST_VAR'].map((k) => k.toUpperCase()));
   // On Windows, libuv adds the variables a process can't run without when the env block lacks them
   // (uv_spawn's required_vars); none of them is a secret.
-  const libuv = new Set(process.platform === 'win32' ? ['LOGONSERVER', 'USERDOMAIN', 'WINDIR', 'SYSTEMDRIVE', 'SYSTEMROOT', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'USERNAME', 'USERPROFILE', 'PATH'] : []);
+  // macOS gives every process __CF_USER_TEXT_ENCODING.
+  const libuv = new Set(process.platform === 'win32' ? ['LOGONSERVER', 'USERDOMAIN', 'WINDIR', 'SYSTEMDRIVE', 'SYSTEMROOT', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'USERNAME', 'USERPROFILE', 'PATH']
+    : process.platform === 'darwin' ? ['__CF_USER_TEXT_ENCODING'] : []);
   const plain = stdioServerEnv({ env: { SURGE_TEST_VAR: 'from-config' } });
   check('stdioServerEnv: the safe list plus the server env, nothing planted',
     !('FAKE_SECRET' in plain) && !('SURGE_FAKE_API_KEY' in plain) && plain.SURGE_TEST_VAR === 'from-config' && Object.keys(plain).every((k) => allowed.has(k.toUpperCase())));
