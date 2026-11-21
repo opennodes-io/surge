@@ -79,7 +79,7 @@ pnpm typecheck     # every package
 pnpm test          # the hermetic verification scripts: no network, no API keys
 ```
 
-`pnpm test` covers storage and the bookmarks server, per-site agents and their sandbox, the OpenNodes client (pins, 409 handling, receipts against a node that signs real Ed25519 receipts, the spend policy, Auto), per-host keys, the spend ledger and private mode. CI runs the same, plus the desktop build.
+`pnpm test` covers storage and the bookmarks server (over stdio, and its HTTP mode's token, Host and web-page checks), per-site agents and their sandbox, the OpenNodes client (pins, 409 handling, receipts against a node that signs real Ed25519 receipts, the spend policy, Auto), per-host keys, the spend ledger and private mode. CI runs the same, plus the desktop build.
 
 ## Repository layout
 
