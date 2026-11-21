@@ -25,7 +25,7 @@
   },
   "devDependencies": {
     "@google/generative-ai": "^0.24.0",
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@surge/core": "workspace:*",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
@@ -39,6 +39,6 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.0",
     "typescript": "^5.7.0",
-    "vite": "^6.2.0"
+    "vite": "^6.4.6"
   }
 }
