@@ -164,6 +164,8 @@ async function main() {
 
   r = await raw(port, { headers: { ...auth, host: `rebind.attacker.example:${port}` }, body: initialize() });
   check('spoofed Host (DNS rebinding), with the token: 403', r.status === 403 && !r.headers['mcp-session-id'], `${r.status} ${r.body.slice(0, 80)}`);
+  r = await raw(port, { headers: { ...base, host: `rebind.attacker.example:${port}` }, body: initialize() });
+  check('spoofed Host without a token: 403, so the Host check comes first', r.status === 403, `${r.status}`);
   r = await raw(port, { headers: { ...auth, host: `127.0.0.1.attacker.example` }, body: initialize() });
   check('a Host that only starts like 127.0.0.1: 403', r.status === 403, `${r.status}`);
   r = await raw(port, { headers: { ...auth, host: 'localhost:1' }, body: initialize() });
@@ -189,6 +191,8 @@ async function main() {
   check('a page on another local port (same-site): 403', r.status === 403, `${r.status}`);
   r = await raw(port, { headers: { ...inSession, 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'no-cors' }, body: pageWrite });
   check('a browser request without Origin (Sec-Fetch-Site only): 403', r.status === 403, `${r.status}`);
+  r = await raw(port, { headers: { ...auth, 'sec-fetch-site': 'none', 'sec-fetch-mode': 'cors' }, body: initialize() });
+  check('Sec-Fetch-Site "none" without Origin (no page sent it), with the token: allowed', r.status === 200 && !!r.headers['mcp-session-id'], `${r.status}`);
 
   r = await raw(port, { headers: { ...auth, 'content-length': String(4 * MiB + 1) }, body: Buffer.alloc(4 * MiB + 1, 0x20) });
   check('a body declared over 4 MiB, with the token: 413', r.status === 413, `${r.status}`);

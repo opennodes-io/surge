@@ -110,8 +110,9 @@ Verification scripts for the ONP integration:
     - An unknown tool is answered as unknown, even on an exposed server, and a long tool name is clipped in the log.
     - Bookmarks writes ask. A wrong token is refused.
     - Every call is logged with its decision, and no arguments are kept.
-- `servers/bookmarks-history-mcp/test/http-access.ts` (in `pnpm test`): 40 checks on the built `dist/http.js` (port 0, temp DB), no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx test/http-access.ts` after a build.
-  - Refused, each with the token so only one check is left to stop it: no or a wrong token (401, and before a 5 MiB body is read), a spoofed Host (403), a web page's preflight, simple POST, JSON POST and same-site page (403, no CORS grant, nothing written), a body over 4 MiB declared or chunked (413).
+- `servers/bookmarks-history-mcp/test/http-access.ts` (in `pnpm test`): 42 checks on the built `dist/http.js` (port 0, temp DB), no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx test/http-access.ts` after a build.
+  - Refused, each with the token so only one check is left to stop it: no or a wrong token (401, and before a 5 MiB body is read), a spoofed Host (403, also without a token), a web page's preflight, simple POST, JSON POST and same-site page (403, no CORS grant, nothing written), a body over 4 MiB declared or chunked (413).
+  - Let in: `Sec-Fetch-Site: none` without `Origin` (a user-opened address, which page script can't fake).
   - The 413 also reaches a client that sent `Connection: close`. The server reads an oversized body to the end before answering: answered at once, that client got a reset instead on Windows (9 of 10 declared 5 MiB bodies, 4 of 10 chunked).
   - The SDK's Streamable HTTP client with the token lists, writes and reads, and no response has CORS headers.
   - At 32 sessions the least recently used idle one is closed, never one with an open GET stream; a closed id gets 404.
@@ -398,7 +399,7 @@ Verification for MCP discovery and stdio servers:
   - `connectServer(config, { interactive: false })` (used by `reconnectSaved`) never opens a browser.
   - Tested against the SDK's `simpleStreamableHttp.js --oauth` example (MCP_PORT / MCP_AUTH_PORT), with `shell.openExternal` patched to a fetch through `--inspect`.
 - **Standalone bookmarks server, HTTP mode** (`servers/bookmarks-history-mcp/src/http.ts`, 2026-11-21; not in the installer). Before, it sent `Access-Control-Allow-Origin: *` with no token or body limit, so any web page could read and write bookmarks and history while it ran. Now it has the hub's checks, in this order:
-  - Host (403; plus the SDK's `allowedHosts`), then any `Origin` or `Sec-Fetch-Site` (403; no CORS headers at all), then path, then the bearer token (401, SHA-256 digests through `timingSafeEqual`), then the body (4 MiB, 413 once the rest is read and dropped).
+  - Host (403; plus the SDK's `allowedHosts`), then any `Origin`, or a `Sec-Fetch-Site` other than `none` (403; no CORS headers at all), then path, then the bearer token (401, SHA-256 digests through `timingSafeEqual`), then the body (4 MiB, 413 once the rest is read and dropped).
   - It listens on 127.0.0.1. The token is `SURGE_MCP_HTTP_TOKEN` (16+ characters), or a generated one printed to stderr.
   - Sessions stay stateful: at most 32, closed after 10 idle minutes, and the least recently used idle one makes room. A session with a request or GET stream open is never closed. An unknown id gets 404.
 - **Surge hub** (`apps/desktop/src/main/services/surge-hub.ts`): a local MCP server at `http://127.0.0.1:<hub.port, 4766>/mcp` exposing the `browser` and `bookmarks` virtual servers to other AI apps.

@@ -29,7 +29,7 @@ SURGE_MCP_HTTP_TOKEN=<a long random string> node dist/http.js
   - Set `SURGE_MCP_HTTP_TOKEN` (16 characters or more), for example from `node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`.
   - Or leave it unset: the server makes one at start and prints it to stderr. It changes on every start.
 - **This machine only.** It listens on 127.0.0.1, and a request whose `Host` isn't `127.0.0.1:<port>` or `localhost:<port>` gets 403. That stops DNS-rebinding pages too.
-- **No web pages.** It sends no CORS headers. A request a browser makes for a page carries `Origin` or `Sec-Fetch-Site`, and gets 403.
+- **No web pages.** It sends no CORS headers. A request a browser makes for a page carries `Origin`, or a `Sec-Fetch-Site` other than `none`, and gets 403.
   - So browser-based clients can't connect. That includes MCP Inspector's direct mode; its default proxy mode works.
 - **Limits.** A body over 4 MiB gets 413. At most 32 sessions are kept:
   - a session idle for 10 minutes is closed;
