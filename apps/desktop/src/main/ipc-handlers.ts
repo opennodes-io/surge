@@ -102,7 +102,7 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   registerHubHandlers(mcpManager, settingsService, secretStore, { pageOrigin: () => browserService.pageOrigin(), appUi: getAppUi });
 
   // Copy text for the renderer (its sandbox has no reliable clipboard access).
-  ipcMain.handle('clipboard:writeText', (_e, text: string) => { clipboard.writeText(String(text ?? '')); return true; });
+  ipcMain.handle('clipboard:writeText', async (_e, text: string) => { await clipboard.writeText(String(text ?? '')); return true; });
 
   // What the chat's tool-call block shows: the server and the bare tool name from "server__tool".
   const toolLabels = (namespaced: string) => {

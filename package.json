@@ -16,7 +16,6 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "electron",
       "esbuild"
     ],
     "overrides": {
@@ -31,6 +30,6 @@
     }
   },
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.12"
   }
 }

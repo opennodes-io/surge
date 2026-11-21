@@ -15,9 +15,8 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    env:
-      # Building and testing never launch Electron, so skip its ~100 MB runtime download.
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    # No Electron binary is downloaded: since Electron 42 the npm package fetches it on first launch
+    # (install-electron), and nothing here launches it.
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4 # version from package.json "packageManager"
