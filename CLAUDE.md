@@ -110,12 +110,19 @@ Verification scripts for the ONP integration:
     - An unknown tool is answered as unknown, even on an exposed server, and a long tool name is clipped in the log.
     - Bookmarks writes ask. A wrong token is refused.
     - Every call is logged with its decision, and no arguments are kept.
+- `servers/bookmarks-history-mcp/test/http-access.ts` (in `pnpm test`): 42 checks on the built `dist/http.js` (port 0, temp DB), no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx test/http-access.ts` after a build.
+  - Refused, each with the token so only one check is left to stop it: no or a wrong token (401, and before a 5 MiB body is read), a spoofed Host (403, also without a token), a web page's preflight, simple POST, JSON POST and same-site page (403, no CORS grant, nothing written), a body over 4 MiB declared or chunked (413).
+  - Let in: `Sec-Fetch-Site: none` without `Origin` (a user-opened address, which page script can't fake).
+  - The 413 also reaches a client that sent `Connection: close`. The server reads an oversized body to the end before answering: answered at once, that client got a reset instead on Windows (9 of 10 declared 5 MiB bodies, 4 of 10 chunked).
+  - The SDK's Streamable HTTP client with the token lists, writes and reads, and no response has CORS headers.
+  - At 32 sessions the least recently used idle one is closed, never one with an open GET stream; a closed id gets 404.
+  - A generated token is printed and works; a token under 16 characters stops the start.
 - `packages/core/test/verify-onp.ts`: a **local** registry with the fixture Echo node. Bundle it with esbuild (externals `@google/generative-ai @libsql/client @modelcontextprotocol/sdk openai`), then run it with node.
 - `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
 
 Verification for MCP discovery and stdio servers:
-- `packages/core/test/verify-discovery.ts` (64 checks, in `pnpm test`): a mock index in mcprating.io's shape, a mock official registry and local stdio servers; no network. Covers:
-  - the index: its own tier wins and its safety cap holds; Surge's fallback rule matches mcprating.io's thresholds; delisted rows are unverified; an unscored row shows no safety score; safety, flags and the start test come through; `sortBy=tested`, with a retry by quality where it's unknown; a 400 isn't a fallback; no install command is made up; no request carries a partner key or any other key
+- `packages/core/test/verify-discovery.ts` (73 checks, in `pnpm test`): a mock index in mcprating.io's shape, a mock official registry and local stdio servers; no network. Covers:
+  - the index: its own tier wins and its safety cap holds; Surge's fallback rule matches mcprating.io's thresholds; delisted rows are unverified; an unscored row shows no safety score; safety, flags and the start test come through; `sortBy=tested`, with a retry by quality where it's unknown; a 400 isn't a fallback; a search's filters, which the index drops, are applied by Surge (largest page, page size, `total`, the note, no later page), and an index that applies them loses nothing; no install command is made up; no request carries a partner key or any other key
   - the official registry: the fallback on a closed port and on a 500, and a source of its own; the adapter (remotes, npm pinned, pypi via uvx, oci not run, templated endpoints and inactive or older entries skipped); filters it can't apply; identifiers and versions that npx or uvx would read as a flag, URL, tarball or `owner/repo` get no command
   - the desktop settings migration (only the old localhost:3000, only once), imported from `apps/desktop/src/main/services/settings-migrations.ts`
   - the stdio environment: a planted `FAKE_SECRET` doesn't reach a fixture server (`test/fixtures/env-echo-server.mjs`), nor after a saved-server restart; the built bookmarks server starts with `SURGE_DB_PATH` from its own `env`
@@ -325,17 +332,22 @@ Verification for MCP discovery and stdio servers:
       - trusted: quality 60+ with a public repo and an install command or endpoint;
       - community: quality 30+;
       - safety under 50 caps it at community, under 30 at unverified.
-    - A row with a `delistedReason` is unverified. The list and search drop delisted rows, but the slug routes (`getServer`, `/servers/lookup`) still return them with their old tier.
+    - A row with a `delistedReason` is unverified, whatever tier it carries. The list and search drop delisted rows; the slug routes (`getServer`, `/servers/lookup`) still return them. mcprating.io has sent `trustTier: "unknown"` for them since MCP_Index 0022255; before that it sent their old tier.
     - `tierBasis` says which, in the badge's tooltip.
-    - mcprating.io publishes no schema for these fields, so they're read defensively.
+    - `trustTier`, `safetyScore`, `safetyBand` and `safetyFlags` are documented and stable (`/api/docs/json`, on `/servers`, `/servers/{slug}` and `/servers/lookup`, since 2026-11-21): new fields and flags may be added, but names and meanings won't change. Other fields are read defensively.
   - **Evidence, not a bare tier.** Each listing shows its safety score (band colour) and flags, and the start test: "passed", "needs credentials", "failed" or "not run", with the date and tool count in the tooltip. The index fields are `safetyScore`, `safetyFlags`, `verification.latestOutcome`, `metadata.verification.tools`, `metadata.remotes` and `delistedReason`.
     - The safety score is a heuristic over repository and package metadata, not a scan, and the tooltip says so.
-    - The band comes from the score (80 / 50, the index's thresholds), not from `safetyBand`.
+    - The band comes from the score with the thresholds documented for `safetyBand` (80 / 50), so the badge always agrees with the number.
     - A row with no quality score shows no safety score: one added since the index's last scoring pass can read 100 without being assessed.
   - **Order.** The panel defaults to "Tested first" (`sortBy=tested`, on mcprating.io since 2026-11-11): servers that passed the start test come first.
     - An index that rejects it with a 400 is asked again by quality.
     - Any other 400 (an unknown category, say) is the index answering, so it shows the index's reason rather than falling back.
     - The parameters are `search` and `sortBy`; `q` and `sort` would be silently ignored.
+  - **Filters with a search** (fixed 2026-11-21). With `search` set, mcprating.io applies `category` and `sortBy` but drops `hasUi`, `isOfficial`, `minScore` and `requiresAuth` (`search=github&minScore=70` returned 41s), so "Official only" and "Has UI" showed rows that didn't match. Not fixed upstream yet.
+    - For a search with any of them, `listServers` asks for 100 rows (the API's largest page; more is a 400), filters on `supportsUi`/`uiType`, `isOfficial`, `qualityScore` and `requiresAuth`, and keeps the requested page size.
+    - `total` counts the matches found. When the page was full and too few matched, the note says only the first 100 were checked.
+    - The filters are still sent, so a fixed index loses nothing. A later page (`offset` > 0) is empty, since the index's offsets count unfiltered rows; the panel doesn't page.
+    - Queries without a search are unchanged.
   - **Disclosure.** One line under "Discover Servers" names the source. For mcprating.io it says it has the same maintainer as Surge, and that the source can be changed in Settings → Advanced. A fallback says the index didn't answer. No key is ever sent (mcprating.io's promoted results need `x-partner-key`).
   - **No made-up commands.** A listing without a command, npm package or endpoint used to connect as `npx -y <slug>`, which runs whatever npm package has that name (or, for `owner/repo`, a GitHub repository).
     - `connectConfigFor` returns null for it, and Connect is disabled.
@@ -376,7 +388,7 @@ Verification for MCP discovery and stdio servers:
     - stdio messages are capped at 10 MiB;
     - client redirects stay on the endpoint's origin;
     - OAuth credentials are bound to their issuer, and old ones still work.
-    - The hub reads its own body (4 MiB), so the SDK's new HTTP limit doesn't apply.
+    - The hub reads its own body (4 MiB), so the SDK's new HTTP limit doesn't apply. The standalone server's HTTP mode does the same, with the same cap.
   - **Electron 45.4.1** (2026-11-21, branch `deps/electron-45`, cut from `deps/security-0.1.8`; for 0.1.9): Chromium 156, Node 24.22.3, supported until about April 2027.
     - Closes all 89 Electron alerts and extract-zip's 2 (Electron 45 uses `@electron/get` 5 and `@electron-internal/extract-zip`). Open alerts 106 → 15, none shipped; `pnpm audit --prod` is clean. What's left is `tar` 6 (Capacitor), minimatch, glob and esbuild, all tooling.
     - **`SecretStore` uses safeStorage's async methods** (commit "Keychain: …", droppable; 45 deprecates the sync ones and 46 removes them). `SecretStore.open()` is awaited in main before the window and the IPC handlers exist, and decrypts everything once; reads are served from memory, so `SettingsPort`, the hub token and the OAuth store stay synchronous. Trade-off: every saved key now sits decrypted in main-process memory from startup (before, each read decrypted on demand). Writes are sealed and saved in order in the background, `will-quit` waits up to 3s for them, and the plaintext migration drops the settings-file copy only once the keychain copy is on disk.
@@ -398,6 +410,10 @@ Verification for MCP discovery and stdio servers:
   - The client registration and tokens are stored per server URL in the keychain (`mcp.oauth.<host><path>#client|tokens`), so reconnects reuse them. Sign out forgets them.
   - `connectServer(config, { interactive: false })` (used by `reconnectSaved`) never opens a browser.
   - Tested against the SDK's `simpleStreamableHttp.js --oauth` example (MCP_PORT / MCP_AUTH_PORT), with `shell.openExternal` patched to a fetch through `--inspect`.
+- **Standalone bookmarks server, HTTP mode** (`servers/bookmarks-history-mcp/src/http.ts`, 2026-11-21; not in the installer). Before, it sent `Access-Control-Allow-Origin: *` with no token or body limit, so any web page could read and write bookmarks and history while it ran. Now it has the hub's checks, in this order:
+  - Host (403; plus the SDK's `allowedHosts`), then any `Origin`, or a `Sec-Fetch-Site` other than `none` (403; no CORS headers at all), then path, then the bearer token (401, SHA-256 digests through `timingSafeEqual`), then the body (4 MiB, 413 once the rest is read and dropped).
+  - It listens on 127.0.0.1. The token is `SURGE_MCP_HTTP_TOKEN` (16+ characters), or a generated one printed to stderr.
+  - Sessions stay stateful: at most 32, closed after 10 idle minutes, and the least recently used idle one makes room. A session with a request or GET stream open is never closed. An unknown id gets 404.
 - **Surge hub** (`apps/desktop/src/main/services/surge-hub.ts`): a local MCP server at `http://127.0.0.1:<hub.port, 4766>/mcp` exposing the `browser` and `bookmarks` virtual servers to other AI apps.
   - Off by default (`hub.enabled`). It needs a bearer token (`hub.token` in the keychain), uses the SDK's DNS-rebinding protection (`allowedHosts`), and is stateless: a server and transport per POST.
   - Read-only unless `hub.allowActions`: 28 tools with actions (counted in the app on 2026-11-21). Refused calls say how to allow them.
@@ -499,7 +515,6 @@ Verification for MCP discovery and stdio servers:
    - Add a mobile subpath for the platform-agnostic `onp/` modules.
    - A way to set a stdio server's `env`, now that Surge's environment isn't inherited. Secrets belong in the keychain, not in `mcp.savedServers`. The official registry's `environmentVariables` (with `isRequired` / `isSecret`) say what to ask for. Never fill them from Surge's own environment.
    - Test a `uvx` server on Windows once uv is installed.
-   - The standalone bookmarks server's HTTP mode (`servers/bookmarks-history-mcp/src/http.ts`) sends `Access-Control-Allow-Origin: *`, with no token and no body limit. While it runs, any web page can read and write bookmarks and history. It isn't in the installer, but give it the hub's token and Host checks.
 3. **Live UI, next phases** (the MVP and phase 2 are in "Known state"):
    - Phase 2 follow-ups:
      - The "When it helps" cues are English only; other languages get no view unless the setting is "Every turn".
