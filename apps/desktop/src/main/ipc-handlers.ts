@@ -458,7 +458,7 @@ export function registerIpcHandlers(getBrowserView: () => WebContentsView | null
   // Private mode survives restarts: bring the router back if it was on.
   if (aiService.isPrivateMode()) {
     startPrivateRouter(settingsService)
-      .then((origin) => aiService.setPrivateRouter(origin))
+      .then((router) => aiService.setPrivateRouter(router))
       .catch((err) => console.error('[private] router did not start:', err?.message ?? err));
   }
   app.on('will-quit', () => { stopPrivateRouter().catch(() => {}); });

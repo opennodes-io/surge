@@ -503,6 +503,10 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
               </span>
               {privateStatus?.error && <span className="settings-hint" style={{ color: 'var(--accent-red)' }}>{privateStatus.error}</span>}
               <label style={{ marginTop: '8px' }}>LAN peers (Ollama servers or OpenNodes nodes)</label>
+              <span className="settings-hint">
+                Their models are listed and can be picked by name. Auto (private) uses only this machine and nodes pinned by their card key,
+                and a node found over mDNS is used only when pinned. Surge can't pin a node yet.
+              </span>
               {(privateStatus?.peers ?? []).map(peer => (
                 <div key={peer} style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px' }}>
                   <code style={{ flex: 1 }}>{peer}</code>
@@ -522,7 +526,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                 Discover LAN machines automatically (mDNS; Windows may ask to allow network access)
               </label>
               {(privateStatus?.discoveredPeers.length ?? 0) > 0 && (
-                <span className="settings-hint">Reachable: {privateStatus!.discoveredPeers.map(p => `${p.name} (${p.kind})`).join(', ')}</span>
+                <span className="settings-hint">Reachable: {privateStatus!.discoveredPeers.map(p => `${p.name} (${p.kind}${p.pinned ? ', pinned' : ''})`).join(', ')}</span>
               )}
             </div>
 

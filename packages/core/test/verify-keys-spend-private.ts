@@ -186,7 +186,7 @@ async function main() {
   // ── 3) private mode ────────────────────────────────────
   const router = await startOllamaRouter({ port: 0, host: '127.0.0.1', ollama: `http://127.0.0.1:${ollama.port}`, registry: null, mdns: false, log: () => {} });
   settingsStore['private.enabled'] = true;
-  ai.setPrivateRouter(router.origin);
+  ai.setPrivateRouter({ origin: router.origin, token: router.token });
   const registryBefore = seen.registry;
   models = await ai.listModels();
   check('private mode lists only the local models, led by Auto (private)',

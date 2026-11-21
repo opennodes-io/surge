@@ -17,9 +17,9 @@
   },
   "dependencies": {
     "@libsql/client": "^0.14.0",
-    "@opennodes/cli": "^0.1.2",
-    "@opennodes/core": "^0.1.1",
-    "@opennodes/ollama-router": "^0.1.2",
+    "@opennodes/cli": "0.1.33",
+    "@opennodes/core": "0.1.24",
+    "@opennodes/ollama-router": "0.1.27",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1"
   },

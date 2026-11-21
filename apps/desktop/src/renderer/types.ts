@@ -182,7 +182,7 @@ export interface PrivateStatus {
   ollama: string;
   peers: string[];
   mdns: boolean;
-  discoveredPeers: Array<{ name: string; kind: string; origin: string }>;
+  discoveredPeers: Array<{ name: string; kind: string; origin: string; pinned: boolean }>;
   error?: string;
 }
 
