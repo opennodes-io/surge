@@ -355,6 +355,28 @@ Verification for MCP discovery and stdio servers:
       - an index on a closed port showed the official registry's list with the fallback note;
       - Settings → MCP Server Directory reported "mcprating.io answered (104,791 servers)";
       - dark and light.
+- **Dependency security** (2026-11-21, for 0.1.8; branch `deps/security-0.1.8`): 202 open Dependabot alerts → 106, none of them shipped except Electron's.
+  - **What ships** decides what matters:
+    - the Electron binary;
+    - what electron-vite bundles into `dist/` (check with `electron-vite build --sourcemap` and read the maps' `sources`);
+    - the asar's `node_modules`.
+  - Of the alerted packages that is `electron`, the MCP SDK, `@hono/node-server` (the hub's transport), `zod` (via the SDK) and `fast-uri` (via ajv).
+  - Installed but never bundled: the SDK's express and hono. The hub and the bookmarks server use `node:http`.
+  - Updated: SDK 1.32.2, `@hono/node-server` 2.1.11, fast-uri 3.1.9, and zod 4.6.7 (a major, in its own commit). The bookmarks server needed `z.record(z.string(), …)`, and its `tools/list` lost `additionalProperties: false`.
+  - **`pnpm.overrides`** in the root `package.json` are keyed to the vulnerable range only, e.g. `fast-uri@>=3.0.0 <3.1.9`. pnpm applies a range key to every spec that *intersects* it, peers included, so don't add a key that overlaps another major or a `>=` peer (an esbuild one did and was dropped). Delete an override once its parent's own range moves past it.
+  - **Left:**
+    - Electron 35.7.5: 89 alerts, plus Chromium 134, out of support since 2025-09.
+    - `tar` 6 under `@capacitor/cli` 6 (the remaining critical, mobile tooling only); the fix is Capacitor 7.
+    - `extract-zip` (no fix), minimatch 11 / glob 14 / tsup 9 majors (build only).
+  - **SDK 1.30–1.32 behaviour changes:**
+    - stdio messages are capped at 10 MiB;
+    - client redirects stay on the endpoint's origin;
+    - OAuth credentials are bound to their issuer, and old ones still work.
+    - The hub reads its own body (4 MiB), so the SDK's new HTTP limit doesn't apply.
+  - **Electron:** the target is 45.x (Chromium 156, Node 24.22).
+    - 45 deprecates the synchronous `safeStorage` methods `SecretStore` uses, and 46 removes them.
+    - libsql's binding is N-API. `node:sqlite` isn't used.
+    - 42+ no longer downloads its binary on install.
 - **Social channels** (`apps/desktop/src/main/services/channels.ts`, `ChannelsPanel.tsx`): Instagram, TikTok, X, Facebook, YouTube, LinkedIn and Reddit, read in the embedded browser with the user's own sign-in (default session cookies).
   - "Signed in" means the site's session cookie is present (`sessionid`, `auth_token`, `c_user`, `LOGIN_INFO`, `li_at`, `reddit_session`). Sign out clears the domain's cookies.
   - **Summarize my feed** opens the feed and asks the chat to use `browser__collectFeed`. The tool waits up to 8s for posts, scrolls ≤ 8 screens, collects the outermost post elements (`article`, `[role=article]`, tweets, `ytd-*-renderer`, `shreddit-post`, LinkedIn and TikTok feed items), dedupes them, and returns text plus permalink.
@@ -452,7 +474,9 @@ Verification for MCP discovery and stdio servers:
 1. **Installers.** Surge 0.1.6 for Windows is the latest published release (see "Windows installer" above).
    - Each release: bump `apps/desktop` `version` in a PR, merge, push `v<version>`, then review and publish the draft (CONTRIBUTING.md). Publishing is the user's call. Check that it actually published: `gh api repos/opennodes-io/surge/releases` shows `draft=false`. A `v0.1.0` draft, built before the browser-mode fixes, was never published. It and its tag were deleted, so `v0.1.1` through `v0.1.6` are the only tags and releases.
    - Code signing is the user's decision (a certificate or Azure Trusted Signing). Unsigned, SmartScreen warns about an unknown publisher.
-   - Next: 0.1.8, with the MCP discovery and stdio environment fixes ("Known state"). Nothing is bumped yet. The review's signal afterwards: installer downloads of 0.1.8.
+   - Next: 0.1.8, with the MCP discovery and stdio environment fixes and the dependency security updates ("Known state"). Nothing is bumped yet. The review's signal afterwards: installer downloads of 0.1.8.
+     - Release notes from SDK 1.32: a remote server that redirects to another origin no longer connects, and a single stdio message over 10 MiB is refused.
+   - Then Electron 35 → 45 as its own release (see "Dependency security"). Before Electron 46, `SecretStore` must move to the async `safeStorage` methods. Test the installed copy: keychain, libsql, router and hub.
    - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
 2. **Follow-ups:**
@@ -464,6 +488,7 @@ Verification for MCP discovery and stdio servers:
    - Add a mobile subpath for the platform-agnostic `onp/` modules.
    - A way to set a stdio server's `env`, now that Surge's environment isn't inherited. Secrets belong in the keychain, not in `mcp.savedServers`. The official registry's `environmentVariables` (with `isRequired` / `isSecret`) say what to ask for. Never fill them from Surge's own environment.
    - Test a `uvx` server on Windows once uv is installed.
+   - The standalone bookmarks server's HTTP mode (`servers/bookmarks-history-mcp/src/http.ts`) sends `Access-Control-Allow-Origin: *`, with no token and no body limit. While it runs, any web page can read and write bookmarks and history. It isn't in the installer, but give it the hub's token and Host checks.
 3. **Live UI, next phases** (the MVP and phase 2 are in "Known state"):
    - Phase 2 follow-ups:
      - The "When it helps" cues are English only; other languages get no view unless the setting is "Every turn".
