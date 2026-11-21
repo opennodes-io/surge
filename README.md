@@ -15,7 +15,8 @@
 ## What it does
 
 **Tools, through MCP**
-- Connect MCP servers over stdio, SSE or streamable HTTP, and find them in a discovery browser: the public registry.mcp.so catalog, or quality ratings and trust tiers from an MCP_Index registry if you point `mcp.indexUrl` at one.
+- Connect MCP servers over stdio, SSE or streamable HTTP, and find them in a discovery browser. By default it reads [mcprating.io](https://mcprating.io), which adds quality ratings, trust tiers, safety flags and a start test, and has the same maintainer as Surge. The official [MCP Registry](https://registry.modelcontextprotocol.io) lists servers without rating them; Surge falls back to it, or uses it alone if you choose it in Settings → Advanced.
+- stdio servers start with a short list of safe environment variables (PATH, home and temp folders) plus the `env` you give them, never Surge's whole environment.
 - An embedded browser whose page tools are exposed as an MCP server, plus per-site agents that are declarative, approved before they run, and sandboxed when they use code.
 - **Asks before acting:** the model reads freely, but before it clicks, types, submits or uses a server's tool, Surge shows an Allow / Deny card, once per site per chat. Running a script on a page asks every time.
 - MCP Apps / MCP-UI surfaces rendered in a sandboxed, null-origin iframe.

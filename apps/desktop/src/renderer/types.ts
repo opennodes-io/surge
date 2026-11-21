@@ -1,4 +1,5 @@
 import type { ToolCallData } from './components/McpToolCallBlock';
+import type { DiscoveryQuery, DiscoveryResult, IndexServer, IndexCategory } from '@surge/core/discovery';
 // Type declarations for the Surge preload bridge
 
 declare global {
@@ -43,7 +44,7 @@ declare global {
         disconnect: (serverId: string) => Promise<void>;
       };
       discovery: {
-        list: (params?: DiscoveryQuery) => Promise<{ servers: IndexServer[]; total: number }>;
+        list: (params?: DiscoveryQuery) => Promise<DiscoveryResult>;
         get: (slug: string) => Promise<IndexServer | null>;
         similar: (slug: string) => Promise<IndexServer[]>;
         categories: () => Promise<IndexCategory[]>;
@@ -302,47 +303,9 @@ export interface ConnectedServer {
   source?: string;
 }
 
-// ── Discovery (MCP_Index) ──────────────────────────────
-export interface DiscoveryQuery {
-  search?: string;
-  category?: string;
-  sortBy?: 'quality' | 'stars' | 'downloads' | 'recent' | 'name';
-  limit?: number;
-  offset?: number;
-  hasUi?: boolean;
-  minScore?: number;
-  requiresAuth?: boolean;
-  isOfficial?: boolean;
-}
-
-export interface IndexServer {
-  id: string;
-  slug: string;
-  name: string;
-  description: string;
-  category?: string;
-  qualityScore?: number | null;
-  uiType?: 'mcp-apps' | 'mcp-ui' | null;
-  supportsUi?: boolean;
-  supportsDiscovery?: boolean;
-  discoveryUrl?: string | null;
-  requiresAuth?: boolean;
-  isOfficial?: boolean;
-  isVerified?: boolean;
-  stars?: number;
-  weeklyDownloads?: number;
-  npmPackage?: string | null;
-  installCommand?: string | null;
-  trustTier?: 'verified' | 'trusted' | 'community' | 'unverified';
-  source?: string;
-}
-
-export interface IndexCategory {
-  id?: string;
-  name: string;
-  slug: string;
-  serverCount?: number;
-}
+// ── Discovery: the index (mcprating.io by default) and the official MCP Registry ──
+// The shapes come from @surge/core/discovery, which normalizes both sources.
+export type { DiscoveryQuery, DiscoveryResult, DiscoveryOrigin, IndexServer, IndexCategory } from '@surge/core/discovery';
 
 // ── Local bookmarks / history (renderer view) ──────────
 export interface Bookmark {

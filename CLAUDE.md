@@ -113,6 +113,13 @@ Verification scripts for the ONP integration:
 - `packages/core/test/verify-onp.ts`: a **local** registry with the fixture Echo node. Bundle it with esbuild (externals `@google/generative-ai @libsql/client @modelcontextprotocol/sdk openai`), then run it with node.
 - `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
 
+Verification for MCP discovery and stdio servers:
+- `packages/core/test/verify-discovery.ts` (64 checks, in `pnpm test`): a mock index in mcprating.io's shape, a mock official registry and local stdio servers; no network. Covers:
+  - the index: its own tier wins and its safety cap holds; Surge's fallback rule matches mcprating.io's thresholds; delisted rows are unverified; an unscored row shows no safety score; safety, flags and the start test come through; `sortBy=tested`, with a retry by quality where it's unknown; a 400 isn't a fallback; no install command is made up; no request carries a partner key or any other key
+  - the official registry: the fallback on a closed port and on a 500, and a source of its own; the adapter (remotes, npm pinned, pypi via uvx, oci not run, templated endpoints and inactive or older entries skipped); filters it can't apply; identifiers and versions that npx or uvx would read as a flag, URL, tarball or `owner/repo` get no command
+  - the desktop settings migration (only the old localhost:3000, only once), imported from `apps/desktop/src/main/services/settings-migrations.ts`
+  - the stdio environment: a planted `FAKE_SECRET` doesn't reach a fixture server (`test/fixtures/env-echo-server.mjs`), nor after a saved-server restart; the built bookmarks server starts with `SURGE_DB_PATH` from its own `env`
+
 **OpenAI SDK quirks on the ONP path:**
 - By default the SDK **resends 409s** with the same headers, so ONP clients are built with `maxRetries: 0`.
 - On an error, the SDK keeps only an `{error: …}` body, so a node's problem+json `title` (`price_changed` / `offering-mismatch`) never reaches `err.error`. After a 409, Surge re-fetches the card: a newer revision means price_changed, the same revision means offering-mismatch.
@@ -299,6 +306,55 @@ Verification scripts for the ONP integration:
       - Sort, the third-click reset and the filter ("2 of 10 rows") worked with no model request.
       - A greeting went out without `ui__render`, while a comparison and its follow-up got it; Off and Every turn behaved as named.
     - Real model: Auto (private) on a local gemma drew a compare view in 54 s. It gave both cards the same title, so the schema now asks for "title (names the option)". After phase 2 it drew one in 78 s, with "Python" and "JavaScript" as the titles; the build was running at the same time.
+- **MCP discovery and the stdio environment** (fixed 2026-11-21 for 0.1.8; `discovery/discovery-client.ts`, `ServerPanel.tsx`, Settings → Advanced → MCP Server Directory). Phase 1 of the machine-internet review: fixes only, no embedded tool search, no tool-poisoning claims. Four defects were in 0.1.7:
+  - **Source.** `mcp.indexUrl` defaulted to `http://localhost:3000`, and the fallback, `registry.mcp.so`, is NXDOMAIN, so installed users most likely saw an empty list.
+    - The default is now `https://mcprating.io` (`DEFAULT_MCP_INDEX`). Its `/api/v1/servers` is the shape the client already read.
+    - `settings-migrations.ts` drops a stored `localhost:3000` once (marker `mcp.indexUrlMigrated`), so a later deliberate choice stays.
+    - The fallback is the official MCP Registry (`OFFICIAL_MCP_REGISTRY`, `/v0/servers?version=latest`) through `normalizeRegistryServer`:
+      - only active, latest entries;
+      - `remotes` become endpoints (templated URLs skipped);
+      - npm runs as `npx -y id@version`, pypi as `uvx id`; oci, nuget and mcpb get no command.
+      - Anyone can publish there, so a name must look like a package name (`npmPackageName`, a PyPI pattern) and a version like a version. Otherwise there's no command, since `--call=…`, a URL, a tarball or `owner/repo` would also run.
+      - It searches names only and rates nothing, so its entries have no tier. A filter it can't apply (category, UI, official, score) returns nothing, with a note.
+    - The Settings field takes the registry too (`https://registry.modelcontextprotocol.io`, or any base ending in `/v0`). Empty means the registry alone. `mcp.registryUrl` (no UI) overrides the fallback; the tests use it.
+    - `McpManager.discoverServers` (IPC `mcp:discover`) uses the same `DiscoveryClient`.
+  - **Tiers.** `trustTier` came from `qualityScore` alone, so a server mcprating.io caps for safety could show as "trusted".
+    - Now the source's own `trustTier` wins (its `unknown` shows as `unverified`).
+    - Surge's rule (`deriveTrustTier`) runs only without one. It is mcprating.io's rule (MCP_Index `src/scoring/trust-tier.ts`):
+      - verified: `isVerified`, or official with quality 80+;
+      - trusted: quality 60+ with a public repo and an install command or endpoint;
+      - community: quality 30+;
+      - safety under 50 caps it at community, under 30 at unverified.
+    - A row with a `delistedReason` is unverified. The list and search drop delisted rows, but the slug routes (`getServer`, `/servers/lookup`) still return them with their old tier.
+    - `tierBasis` says which, in the badge's tooltip.
+    - mcprating.io publishes no schema for these fields, so they're read defensively.
+  - **Evidence, not a bare tier.** Each listing shows its safety score (band colour) and flags, and the start test: "passed", "needs credentials", "failed" or "not run", with the date and tool count in the tooltip. The index fields are `safetyScore`, `safetyFlags`, `verification.latestOutcome`, `metadata.verification.tools`, `metadata.remotes` and `delistedReason`.
+    - The safety score is a heuristic over repository and package metadata, not a scan, and the tooltip says so.
+    - The band comes from the score (80 / 50, the index's thresholds), not from `safetyBand`.
+    - A row with no quality score shows no safety score: one added since the index's last scoring pass can read 100 without being assessed.
+  - **Order.** The panel defaults to "Tested first" (`sortBy=tested`, on mcprating.io since 2026-11-11): servers that passed the start test come first.
+    - An index that rejects it with a 400 is asked again by quality.
+    - Any other 400 (an unknown category, say) is the index answering, so it shows the index's reason rather than falling back.
+    - The parameters are `search` and `sortBy`; `q` and `sort` would be silently ignored.
+  - **Disclosure.** One line under "Discover Servers" names the source. For mcprating.io it says it has the same maintainer as Surge, and that the source can be changed in Settings → Advanced. A fallback says the index didn't answer. No key is ever sent (mcprating.io's promoted results need `x-partner-key`).
+  - **No made-up commands.** A listing without a command, npm package or endpoint used to connect as `npx -y <slug>`, which runs whatever npm package has that name (or, for `owner/repo`, a GitHub repository).
+    - `connectConfigFor` returns null for it, and Connect is disabled.
+    - Hosted listings connect to their endpoint: 37 of mcprating.io's top 100 are remote-only.
+    - `requiresAuth` is true when the index says so **or** the endpoint has an Authorization (or required, or secret) header: the live API sends `requiresAuth: false` beside a secret Authorization header.
+  - **Environment.** stdio servers got `{...process.env, ...config.env}`, so every variable in Surge's environment reached every server.
+    - Now they get `stdioServerEnv`: the SDK's `getDefaultEnvironment()` plus `config.env`. On Windows that's APPDATA, HOMEDRIVE, HOMEPATH, LOCALAPPDATA, PATH, PROCESSOR_ARCHITECTURE, SYSTEMDRIVE, SYSTEMROOT, TEMP, USERNAME, USERPROFILE and PROGRAMFILES; elsewhere HOME, LOGNAME, PATH, SHELL, TERM and USER. On Windows, libuv also adds LOGONSERVER, USERDOMAIN and WINDIR.
+    - **Behaviour change:** a server that read something from Surge's environment now needs it in its own `env`, and there's no UI for that yet (see the follow-ups). That covers tokens (a `GITHUB_TOKEN`, say), and also proxy and CA settings (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`). So behind a proxy, `npx` and `uvx` downloads can fail. Say so in the 0.1.8 release notes.
+  - `.badge-yellow` and `.badge-red` had no CSS rule, so caution and risk badges rendered unstyled. They're in `design-system.css` now.
+  - **Verified:**
+    - `verify-discovery.ts` (above).
+    - On Windows, through `McpManager` with the scoped environment: `npx -y @modelcontextprotocol/server-everything` started (16 tools; echo answered), and `python` resolved from PATH, as `uvx.exe` would. `uvx` itself isn't installed on this machine, so it's untested.
+    - In the built Electron app, launched with `FAKE_SECRET` in its own environment, through `window.surge.mcp.connect`: the env-echo fixture (via `node` on PATH) saw only the safe list, its own `env` and libuv's three, and `npx -y` server-everything started.
+    - In the app over CDP, with a throwaway profile seeded with the 0.1.7 value:
+      - the stored `localhost:3000` was removed and mcprating.io applied;
+      - the panel listed 24 servers from mcprating.io with tier, safety, flags, start test and the maintainer note;
+      - an index on a closed port showed the official registry's list with the fallback note;
+      - Settings → MCP Server Directory reported "mcprating.io answered (104,791 servers)";
+      - dark and light.
 - **Social channels** (`apps/desktop/src/main/services/channels.ts`, `ChannelsPanel.tsx`): Instagram, TikTok, X, Facebook, YouTube, LinkedIn and Reddit, read in the embedded browser with the user's own sign-in (default session cookies).
   - "Signed in" means the site's session cookie is present (`sessionid`, `auth_token`, `c_user`, `LOGIN_INFO`, `li_at`, `reddit_session`). Sign out clears the domain's cookies.
   - **Summarize my feed** opens the feed and asks the chat to use `browser__collectFeed`. The tool waits up to 8s for posts, scrolls ≤ 8 screens, collects the outermost post elements (`article`, `[role=article]`, tweets, `ytd-*-renderer`, `shreddit-post`, LinkedIn and TikTok feed items), dedupes them, and returns text plus permalink.
@@ -396,6 +452,7 @@ Verification scripts for the ONP integration:
 1. **Installers.** Surge 0.1.6 for Windows is the latest published release (see "Windows installer" above).
    - Each release: bump `apps/desktop` `version` in a PR, merge, push `v<version>`, then review and publish the draft (CONTRIBUTING.md). Publishing is the user's call. Check that it actually published: `gh api repos/opennodes-io/surge/releases` shows `draft=false`. A `v0.1.0` draft, built before the browser-mode fixes, was never published. It and its tag were deleted, so `v0.1.1` through `v0.1.6` are the only tags and releases.
    - Code signing is the user's decision (a certificate or Azure Trusted Signing). Unsigned, SmartScreen warns about an unknown publisher.
+   - Next: 0.1.8, with the MCP discovery and stdio environment fixes ("Known state"). Nothing is bumped yet. The review's signal afterwards: installer downloads of 0.1.8.
    - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
 2. **Follow-ups:**
@@ -405,6 +462,8 @@ Verification scripts for the ONP integration:
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
    - Add a mobile subpath for the platform-agnostic `onp/` modules.
+   - A way to set a stdio server's `env`, now that Surge's environment isn't inherited. Secrets belong in the keychain, not in `mcp.savedServers`. The official registry's `environmentVariables` (with `isRequired` / `isSecret`) say what to ask for. Never fill them from Surge's own environment.
+   - Test a `uvx` server on Windows once uv is installed.
 3. **Live UI, next phases** (the MVP and phase 2 are in "Known state"):
    - Phase 2 follow-ups:
      - The "When it helps" cues are English only; other languages get no view unless the setting is "Every turn".

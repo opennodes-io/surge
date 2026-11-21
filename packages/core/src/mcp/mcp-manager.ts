@@ -1,11 +1,21 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { SettingsPort } from '../ports/index.js';
 import type { McpWebCapabilities } from './mcpweb-detector.js';
 import type { AgentSpec } from '../storage/types.js';
+import { DEFAULT_MCP_INDEX, DiscoveryClient, type IndexServer } from '../discovery/discovery-client.js';
+
+/**
+ * The environment a stdio server starts with: the SDK's short list of variables that are safe to
+ * inherit (PATH, the user's home and app-data folders, temp, and on Windows SYSTEMROOT and friends),
+ * plus the server's own `env`. Never Surge's whole environment, which can hold API keys and tokens.
+ */
+export function stdioServerEnv(config: Pick<McpServerConfig, 'env'>): Record<string, string> {
+  return { ...getDefaultEnvironment(), ...(config.env || {}) };
+}
 
 export interface McpServerConfig {
   id: string;
@@ -279,7 +289,7 @@ export class McpManager {
       transport = new StdioClientTransport({
         command: config.command,
         args: config.args || [],
-        env: { ...process.env, ...(config.env || {}) } as Record<string, string>,
+        env: stdioServerEnv(config),
       });
       client = new Client({ name: 'surge-mcp-browser', version: '1.0.0' });
       await client.connect(transport);
@@ -513,64 +523,16 @@ export class McpManager {
   }
 
   // ── Server Discovery ────────────────────────────────────
-  async discoverServers(query: string): Promise<any[]> {
-    const results: any[] = [];
-
-    // 1. Try MCP_Index first (local or configured endpoint)
-    const mcpIndexUrl = this.settings.get('mcp.indexUrl') || '';
-    if (mcpIndexUrl) {
-      try {
-        const response = await fetch(
-          `${mcpIndexUrl}/api/v1/servers?search=${encodeURIComponent(query)}&limit=10&sortBy=quality`,
-          { signal: AbortSignal.timeout(5000) }
-        );
-        if (response.ok) {
-          const data = await response.json();
-          const servers = data.data || data.servers || data || [];
-          results.push(...servers.map((s: any) => ({
-            id: s.slug || s.id || s.name,
-            name: s.name || s.slug,
-            description: s.description || '',
-            category: s.category || 'general',
-            qualityScore: s.qualityScore || s.quality_score || null,
-            installCommand: s.installCommand || `npx -y ${s.slug || s.id}`,
-            hasDiscovery: s.hasDiscovery || false,
-            discoveryUrl: s.discoveryUrl || null,
-            source: 'mcp-index',
-          })));
-        }
-      } catch {
-        // MCP_Index unavailable, fall through to registry.mcp.so
-      }
-    }
-
-    // 2. Fallback to registry.mcp.so
-    if (results.length === 0) {
-      try {
-        const response = await fetch(
-          `https://registry.mcp.so/api/servers?q=${encodeURIComponent(query)}&limit=10`,
-          { signal: AbortSignal.timeout(5000) }
-        );
-        if (response.ok) {
-          const data = await response.json();
-          results.push(...(data.servers || data || []).map((s: any) => ({
-            id: s.slug || s.id || s.name,
-            name: s.name || s.slug,
-            description: s.description || '',
-            category: s.category || 'general',
-            qualityScore: null,
-            installCommand: s.installCommand || s.install?.command || `npx -y ${s.slug}`,
-            hasDiscovery: false,
-            discoveryUrl: null,
-            source: 'mcp.so',
-          })));
-        }
-      } catch {
-        // Registry unavailable
-      }
-    }
-
-    return results;
+  /**
+   * Servers matching a query, from the configured index (`mcp.indexUrl`; empty means the registry
+   * alone) with the official MCP Registry as the fallback (`mcp.registryUrl` overrides it). The same
+   * client and normalization as the discovery panel; `hasDiscovery` is kept for older callers.
+   */
+  async discoverServers(query: string): Promise<Array<IndexServer & { hasDiscovery: boolean }>> {
+    const index = this.settings.get('mcp.indexUrl');
+    const client = new DiscoveryClient(typeof index === 'string' ? index : DEFAULT_MCP_INDEX, { registryUrl: this.settings.get('mcp.registryUrl') || undefined });
+    const { servers } = await client.listServers({ search: query, limit: 10, sortBy: 'quality' });
+    return servers.map((s) => ({ ...s, hasDiscovery: !!s.supportsDiscovery }));
   }
 
   // ── Persistence ─────────────────────────────────────────

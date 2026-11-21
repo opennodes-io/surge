@@ -16,8 +16,13 @@ export function registerLocalDataHandlers(mcpManager: McpManager, settings: Sett
     .then((store) => mcpManager.registerVirtualServer(createBookmarksVirtualServer(store)))
     .catch((err) => console.error('[surge] storage init failed:', err));
 
-  const discovery = new DiscoveryClient(settings.get('mcp.indexUrl') || '');
-  const refreshDiscovery = () => discovery.setBaseUrl(settings.get('mcp.indexUrl') || '');
+  // The index is mcp.indexUrl ('' = the official MCP Registry alone); mcp.registryUrl overrides the
+  // fallback registry. Both are read on every call, so a Settings change applies at once.
+  const discovery = new DiscoveryClient(settings.get('mcp.indexUrl') || '', { registryUrl: settings.get('mcp.registryUrl') || undefined });
+  const refreshDiscovery = () => {
+    discovery.setBaseUrl(settings.get('mcp.indexUrl') || '');
+    discovery.setRegistryUrl(settings.get('mcp.registryUrl') || undefined);
+  };
 
   // ── Bookmarks ──
   ipcMain.handle('bookmarks:add', async (_e, input) => (await storePromise).bookmarks.add(input));
@@ -54,7 +59,7 @@ export function registerLocalDataHandlers(mcpManager: McpManager, settings: Sett
   ipcMain.handle('chats:update', async (_e, id: string, patch) => (await storePromise).chat.updateSession(id, patch || {}));
   ipcMain.handle('chats:delete', async (_e, id: string) => ({ deleted: await (await storePromise).chat.deleteSession(id) }));
 
-  // ── Discovery (MCP_Index) ──
+  // ── Discovery (an index such as mcprating.io, with the official MCP Registry as the fallback) ──
   ipcMain.handle('discovery:list', async (_e, params) => {
     refreshDiscovery();
     return discovery.listServers(params || {});

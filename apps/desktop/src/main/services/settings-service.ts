@@ -2,7 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import { app } from 'electron';
 import { ONP_DEFAULT_REGISTRY, DEFAULT_ONP_POLICY, type OnpSpendPolicy } from '@surge/core/onp';
+import { DEFAULT_MCP_INDEX } from '@surge/core/discovery';
 import type { SecretStore } from './secret-store';
+import { migrateSettingsData } from './settings-migrations';
 
 interface Settings {
   // AI model configuration
@@ -24,7 +26,7 @@ interface Settings {
   'mcp.maxConnections': number; // resource guard on simultaneous MCP servers
   'mcp.autoReconnect': boolean;
   'mcp.savedServers': any[];
-  'mcp.indexUrl': string; // MCP_Index API endpoint for server discovery
+  'mcp.indexUrl': string; // where the MCP Servers panel finds servers; '' = the official MCP Registry alone
 
   // UI
   'ui.theme': 'dark' | 'light';
@@ -46,7 +48,8 @@ const DEFAULTS: Partial<Settings> = {
   'mcp.maxConnections': 25,
   'mcp.autoReconnect': true,
   'mcp.savedServers': [],
-  'mcp.indexUrl': 'http://localhost:3000', // MCP_Index registry; falls back to registry.mcp.so
+  // mcprating.io (same maintainer as Surge, said in the panel); the official MCP Registry is the fallback
+  'mcp.indexUrl': DEFAULT_MCP_INDEX,
   'ui.theme': 'dark',
 };
 
@@ -65,6 +68,7 @@ export class SettingsService {
     this.filePath = path.join(userDataPath, 'surge-settings.json');
     this.secrets = secrets;
     this.load();
+    if (migrateSettingsData(this.data)) this.save();
     this.migrateSecrets();
   }
 

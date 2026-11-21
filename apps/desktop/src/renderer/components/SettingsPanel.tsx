@@ -63,6 +63,9 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
   const [vllmModels, setVllmModels] = useState<string[]>([]);
   const [vllmStatus, setVllmStatus] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle');
   const [onpRegistryUrl, setOnpRegistryUrl] = useState('');
+  // Where the MCP Servers panel finds servers (mcp.indexUrl; '' = the official MCP Registry alone)
+  const [mcpIndexUrl, setMcpIndexUrl] = useState('');
+  const [mcpIndexCheck, setMcpIndexCheck] = useState<{ status: 'idle' | 'checking' | 'done'; text?: string; ok?: boolean }>({ status: 'idle' });
   const [onpModelCount, setOnpModelCount] = useState(0);
   const [onpStatus, setOnpStatus] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle');
   // OpenNodes spend policy (ONP-5); numbers are edited as text and committed on blur
@@ -107,6 +110,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
       setVllmEndpoint(await s.get('ai.vllmEndpoint') || '');
       setVllmModel(await s.get('ai.vllmModel') || '');
       setOnpRegistryUrl(await s.get('ai.onpRegistryUrl') || '');
+      setMcpIndexUrl(await s.get('mcp.indexUrl') || '');
       const p = await s.get('onp.policy') || {};
       setPolicy({
         maxRequestUsd: String(p.maxRequestUsd ?? 0),
@@ -201,6 +205,23 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
       setOnpStatus(count > 0 ? 'connected' : 'error');
     } catch {
       setOnpStatus('error');
+    }
+  };
+
+  // Save the MCP server source, then list one page through it to show what answered.
+  const checkMcpIndex = async (url = mcpIndexUrl) => {
+    setMcpIndexCheck({ status: 'checking' });
+    try {
+      await save('mcp.indexUrl', url.trim());
+      const res = await window.surge.discovery.list({ limit: 5 });
+      let host = res.from.url;
+      try { host = new URL(res.from.url).host; } catch { /* keep the URL */ }
+      const failed = res.from.failed ? (() => { try { return new URL(res.from.failed!).host; } catch { return res.from.failed!; } })() : '';
+      if (res.from.kind === 'none') setMcpIndexCheck({ status: 'done', ok: false, text: `Nothing answered (tried ${failed ? `${failed} and ` : ''}${host}).` });
+      else if (res.from.fallback) setMcpIndexCheck({ status: 'done', ok: false, text: `${failed} didn't answer; the panel will use ${host} instead.` });
+      else setMcpIndexCheck({ status: 'done', ok: true, text: `${host} answered${res.total ? ` (${res.total.toLocaleString()} servers)` : ''}.` });
+    } catch {
+      setMcpIndexCheck({ status: 'done', ok: false, text: 'Could not check the source.' });
     }
   };
 
@@ -385,7 +406,35 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
 
         {tab === 'advanced' && (
           <div className="settings-section">
-            <h3>
+            <h3><IconNetwork size={16} /> MCP Server Directory</h3>
+            <div className="api-key-group">
+              <label>Directory URL</label>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <input className="input" placeholder="https://registry.modelcontextprotocol.io" value={mcpIndexUrl}
+                  onChange={e => setMcpIndexUrl(e.target.value)}
+                  onBlur={() => save('mcp.indexUrl', mcpIndexUrl.trim())}
+                  style={{ flex: 1 }} />
+                <button className="btn-primary btn-sm" onClick={() => checkMcpIndex()}
+                  disabled={mcpIndexCheck.status === 'checking'}
+                  style={{ whiteSpace: 'nowrap' }}>
+                  {mcpIndexCheck.status === 'checking' ? <div className="spinner spinner-sm" /> : 'Test & Save'}
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: '6px', marginTop: '6px', flexWrap: 'wrap' }}>
+                <button className="btn-ghost btn-sm" onClick={() => { setMcpIndexUrl('https://mcprating.io'); checkMcpIndex('https://mcprating.io'); }}>mcprating.io</button>
+                <button className="btn-ghost btn-sm" onClick={() => { setMcpIndexUrl('https://registry.modelcontextprotocol.io'); checkMcpIndex('https://registry.modelcontextprotocol.io'); }}>Official MCP Registry</button>
+              </div>
+              <span className="settings-hint">
+                Where the MCP Servers panel finds servers. mcprating.io (the default) adds ratings, safety flags and a start test,
+                and has the same maintainer as Surge; Surge never sends it a partner key. The official MCP Registry lists servers without rating them,
+                and is used whenever the directory doesn't answer. Leave empty for the official registry alone.
+              </span>
+              {mcpIndexCheck.status === 'done' && (
+                <span className="settings-hint" style={{ color: mcpIndexCheck.ok ? 'var(--accent-green)' : 'var(--accent-red)' }}>{mcpIndexCheck.text}</span>
+              )}
+            </div>
+
+            <h3 style={{marginTop: '24px'}}>
               <IconNetwork size={16} /> OpenNodes Registry
               {onpStatus === 'connected' && <span className="badge badge-green" style={{marginLeft: 8, fontSize: '0.6rem'}}>Connected</span>}
               {onpStatus === 'error' && <span className="badge badge-red" style={{marginLeft: 8, fontSize: '0.6rem'}}>Error</span>}
