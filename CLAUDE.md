@@ -236,6 +236,10 @@ Verification for MCP discovery and stdio servers:
   - Remembered per `key@cardRevision` (`onpPromptToolsOnly`, cleared with the ONP clients), so the next turn sends one request without `tools`, and a node that changes model on a new card is asked again. Listed as "tools via prompt".
   - Auto, on a tool turn: a refusing or remembered pick is skipped ("no native tool calling") in favour of a node that calls tools natively, so it keeps landing on demo-node. Only when no pick takes tools natively are the refusers tried with prompt tools. Turns without tools rank as before.
   - A 409 before the refusal re-pins first; the refusal is remembered against the new revision.
+  - Verified in the built app against the live nodes:
+    - helsinki picked by name, a tool turn with opennodes.io open: answered in 58 s from the prompt-tools request, receipt verified, no error and no markup, then listed as "tools via prompt". It answered from the page title instead of calling a tool, which is the 1.5B model's choice.
+    - Auto in a fresh profile: helsinki skipped with "no native tool calling", and demo-node read the page natively and answered in 53 s, with two verified receipts.
+    - In a session where Auto ran after the direct test, demo-node's llama3.2:1b once wrote tool-definition JSON as text for over 5 minutes in its second round. Its own output, and native mode as before.
 - **Bugs (open):**
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Heavy prompts.* With a page open, the chat sends every browser + bookmarks tool definition each turn (~3.2k prompt tokens). Without a page, the browser server offers only `navigateTo`. `ui__render` (~900 tokens, 3.2k of a no-page turn's 5.1k characters of tools) goes only to turns that look like they need it (Live UI's "When it helps"). This is slow on small CPU nodes and inflates paid ceilings.
