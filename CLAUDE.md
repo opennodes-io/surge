@@ -87,6 +87,11 @@ Verification scripts for the ONP integration:
   - receipts: verified, inflated, foreign key, wrong revision, missing
   - every spend-policy limit
   - tampered-card rejection, and Auto routing with fallback
+- `packages/core/test/verify-onp-prompt-tools.ts` (in `pnpm test`): 18 checks with a mock registry, a node that refuses `tools` the way `io.opennodes.helsinki` does (its live 502 body is the fixture) and one that calls tools natively; no network. Covers:
+  - a node's problem+json detail in the error, and a 502 that isn't a refusal never retried with prompt tools
+  - a model picked by name: one native try, then prompt tools, the `<tool_call>` reply parsed with no markup shown; the next turn sends one request without `tools`
+  - Auto: a refuser gives way to a native taker and is skipped next time, but answers via the prompt when nothing else takes tools
+  - a 409 before the refusal: prompt tools on the re-pinned revision
 - `packages/core/test/verify-keys-spend-private.ts`: 33 checks with mock registry, nodes and Ollama, plus the real `@opennodes/ollama-router`; no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-keys-spend-private.ts`. Covers:
   - per-host keys: sent only to their host; unlock imported offerings; join Auto; forgotten on delete
   - the spend ledger: persistence and the by-day / by-node summary
@@ -129,7 +134,8 @@ Verification for MCP discovery and stdio servers:
 
 **OpenAI SDK quirks on the ONP path:**
 - By default the SDK **resends 409s** with the same headers, so ONP clients are built with `maxRetries: 0`.
-- On an error, the SDK keeps only an `{error: …}` body, so a node's problem+json `title` (`price_changed` / `offering-mismatch`) never reaches `err.error`. After a 409, Surge re-fetches the card: a newer revision means price_changed, the same revision means offering-mismatch.
+- On an error, the SDK keeps only an `{error: …}` body, so a node's problem+json (`title`, `detail`) used to arrive as "502 status code (no body)". ONP clients are `OnpOpenAI`, which overrides the SDK's `makeStatusError` to put `title: detail` in the message (capped at 500 characters). The 409 path still decides from the re-fetched card, not the title: a newer revision means price_changed, the same revision means offering-mismatch.
+- The SDK (openai 4.x) uses `node-fetch` on Node, not the global `fetch`. A `fetch` override would swap the transport for every ONP call, streaming included, which is why the error hook is a subclass instead.
 
 **Gemini SDK quirks** (`@google/generative-ai`):
 - `startChat({ systemInstruction })` passes a string through unconverted, and the API rejects it (400 "Invalid value at 'system_instruction'"). Put the system prompt on `getGenerativeModel`, which converts it.
@@ -158,7 +164,7 @@ Verification for MCP discovery and stdio servers:
   - Verified with the mock script and once against the live `demo-node.opennodes.io` using a deliberately stale pin.
   - The re-resolved card must pass the ONP-2 schema and verify against the node's JWKS, and `card.node.id` must match; otherwise the 409 is surfaced ("could not be verified").
 - **Auto (advisor)** — `onp:auto`, listed first among ONP models (`onp/onp-advisor.ts`, `AiService.createCompletion`):
-  - Pool: the registry's admitted nodes (`tier=community` search; 2 today, `io.opennodes.helsinki` gemma3:1b and `io.opennodes.demo-node` llama3.2:1b, both verified; `io.opennodes.lab` was delisted). They serve without an API key; imported listings don't.
+  - Pool: the registry's admitted nodes (`tier=community` search; 2 today, `io.opennodes.helsinki` bielik-1.5b-v3.0-instruct (gemma3:1b until about 2026-10-22) and `io.opennodes.demo-node` llama3.2:1b, both verified; `io.opennodes.lab` was delisted). They serve without an API key; imported listings don't.
   - `extractFeatures` runs on the latest user turn, and `recommend` ranks on this device within the policy's tier and price cap.
   - Each pick still goes through the full policy check. The next pick is tried when one is blocked or fails before its response starts, which matters because the lab node is often offline.
   - The `OnpCallRecord.advisor` field (task class, score, reasons, skipped picks) shows as an "auto · chat → model (reason)" line.
@@ -223,8 +229,14 @@ Verification for MCP discovery and stdio servers:
   - spend is per device. Calls the user didn't make through `AiService` (e.g. the gateway) aren't counted.
 - `OnpTier` includes `attested` / `local` / `lan`. `verified` and `attested` map to the Smart level.
 - **Fixed 2026-10-20: one listing emptied the picker.** The registry now lists imported models it can't invoke (`invocable: false`, only `endpoints.docs`, e.g. `import.modelsdev.cohere/*`). `hostOf` threw `Invalid URL` on their empty endpoint inside `refreshOnpModels`, whose catch kept nothing, so every ONP model and Auto vanished (released 0.1.7 included). `OnpRegistryClient.searchOfferings` now drops offerings without an http(s) endpoint (`isInvocableOffering`); `verify-onp-invocation.ts` lists one. Ships in 0.1.9.
+- **ONP nodes without native tools** (fixed 2026-11-23; `createCompletion` / `invokeOnp` in `ai-service.ts`).
+  - The problem: `io.opennodes.helsinki` (now bielik-1.5b behind Ollama) answers a request with `tools` with 502 problem+json, "engine returned 400: … does not support tools", which Surge saw as "502 status code (no body)". Only private, vLLM and Ollama Local had a prompt-tools fallback, so helsinki failed every tool turn when picked directly, and Auto skipped it ("1 skipped").
+  - Not from `supports`: neither admitted node declares `tool_calls`, yet demo-node's llama3.2:1b calls tools natively. So it's native first, then the node's stated refusal (`toolsRefused`, now readable through `OnpOpenAI`).
+  - Picked by name: one native try, then the same request with the tools in the prompt (`withPromptTools`, a copy, so Auto's next pick isn't affected). The call context's `promptTools` switches `streamChat` to `<tool_call>` parsing. The spend policy is checked on what is actually sent.
+  - Remembered per `key@cardRevision` (`onpPromptToolsOnly`, cleared with the ONP clients), so the next turn sends one request without `tools`, and a node that changes model on a new card is asked again. Listed as "tools via prompt".
+  - Auto, on a tool turn: a refusing or remembered pick is skipped ("no native tool calling") in favour of a node that calls tools natively, so it keeps landing on demo-node. Only when no pick takes tools natively are the refusers tried with prompt tools. Turns without tools rank as before.
+  - A 409 before the refusal re-pins first; the refusal is remembered against the new revision.
 - **Bugs (open):**
-  - *ONP models without native tools.* Only private / vLLM / Ollama Local fall back to prompt-based tools. `io.opennodes.helsinki` (gemma3:1b, `supports: [streaming]`) answers `502 (no body)` whenever tools are sent, so every chat turn with tools skips it ("1 skipped" under Auto) and it's unusable when picked directly. Listing it as "tools via prompt" from `supports` lacking `tool_calls` would fix it.
   - *Keyed hosts and the top-40 listing.* Imported offerings join Auto (and the key-host suggestions) only if they're in the top-40 listing. Hosts like router.huggingface.co mostly aren't, because the registry has no host filter.
   - *Heavy prompts.* With a page open, the chat sends every browser + bookmarks tool definition each turn (~3.2k prompt tokens). Without a page, the browser server offers only `navigateTo`. `ui__render` (~900 tokens, 3.2k of a no-page turn's 5.1k characters of tools) goes only to turns that look like they need it (Live UI's "When it helps"). This is slow on small CPU nodes and inflates paid ceilings.
 - **Actions ask first** (added 2026-10-16; `orchestrator/approvals.ts`, `ApprovalCard.tsx`).

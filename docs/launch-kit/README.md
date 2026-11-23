@@ -117,4 +117,4 @@ from live CPU nodes, so a full run takes several minutes.
 A run fails unless each OpenNodes reply it shows was served by a node the registry lists right now as verified
 (or attested) and free, so a delisted or key-only node never reaches the media. The live nodes are 1B models: a
 hero take sometimes answers without reading the page, or navigates away (the run then fails); check the stills and
-run again if needed. `io.opennodes.helsinki` (gemma3:1b) answers 502 when tools are sent, so Auto skips it here.
+run again if needed. `io.opennodes.helsinki` (bielik-1.5b) has no native tool calling, so on this tool turn Auto picks a node that does.
