@@ -1,4 +1,4 @@
-export { McpManager, toolNamespace, toolWireName } from './mcp-manager.js';
+export { McpManager, stdioServerEnv, toolNamespace, toolWireName } from './mcp-manager.js';
 export type {
   McpServerConfig,
   ConnectedServer,

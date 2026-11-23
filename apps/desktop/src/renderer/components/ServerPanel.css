@@ -138,9 +138,12 @@
 .sp-discovery-name {
   font-size: var(--text-sm);
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Wraps rather than clipping: the tier badge must stay visible beside a long name. */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  overflow-wrap: anywhere;
 }
 
 .sp-discovery-desc {
@@ -199,4 +202,38 @@
   font-size: var(--text-xs);
   color: var(--text-primary);
   overflow-wrap: anywhere;
+}
+
+/* Discovery: where listings come from (one line), and each listing's evidence (safety, start test). */
+.sp-source-note {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  margin: -2px 0 var(--space-sm);
+}
+
+.sp-source-note.warn {
+  color: var(--accent-orange);
+}
+
+.sp-discovery-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.sp-flag {
+  font-size: 0.6rem;
+  color: var(--text-secondary);
+}
+
+.sp-flag + .sp-flag::before {
+  content: '· ';
+}
+
+.sp-discovery-source {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  margin-top: 2px;
 }

@@ -2,7 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import { app } from 'electron';
 import { ONP_DEFAULT_REGISTRY, DEFAULT_ONP_POLICY, type OnpSpendPolicy } from '@surge/core/onp';
+import { DEFAULT_MCP_INDEX } from '@surge/core/discovery';
 import type { SecretStore } from './secret-store';
+import { migrateSettingsData } from './settings-migrations';
 
 interface Settings {
   // AI model configuration
@@ -24,7 +26,7 @@ interface Settings {
   'mcp.maxConnections': number; // resource guard on simultaneous MCP servers
   'mcp.autoReconnect': boolean;
   'mcp.savedServers': any[];
-  'mcp.indexUrl': string; // MCP_Index API endpoint for server discovery
+  'mcp.indexUrl': string; // where the MCP Servers panel finds servers; '' = the official MCP Registry alone
 
   // UI
   'ui.theme': 'dark' | 'light';
@@ -46,7 +48,8 @@ const DEFAULTS: Partial<Settings> = {
   'mcp.maxConnections': 25,
   'mcp.autoReconnect': true,
   'mcp.savedServers': [],
-  'mcp.indexUrl': 'http://localhost:3000', // MCP_Index registry; falls back to registry.mcp.so
+  // mcprating.io (same maintainer as Surge, said in the panel); the official MCP Registry is the fallback
+  'mcp.indexUrl': DEFAULT_MCP_INDEX,
   'ui.theme': 'dark',
 };
 
@@ -65,6 +68,7 @@ export class SettingsService {
     this.filePath = path.join(userDataPath, 'surge-settings.json');
     this.secrets = secrets;
     this.load();
+    if (migrateSettingsData(this.data)) this.save();
     this.migrateSecrets();
   }
 
@@ -77,15 +81,19 @@ export class SettingsService {
     return this.secretsEncrypted() ? !!this.secrets!.getSecret(key) : !!this.data[key];
   }
 
-  // One-time move of plaintext provider keys into the keychain.
+  // One-time move of plaintext provider keys into the keychain. The plaintext is dropped from the
+  // settings file only once the keychain copies are on disk; if sealing fails, the next start retries.
   private migrateSecrets(): void {
     if (!this.secretsEncrypted()) return;
     const present = SECRET_SETTINGS.filter((key) => key in this.data);
-    for (const key of present) {
-      if (typeof this.data[key] === 'string' && this.data[key]) this.secrets!.setSecret(key, this.data[key]);
-      delete this.data[key];
-    }
-    if (present.length) this.save();
+    if (!present.length) return;
+    const writes = present
+      .filter((key) => typeof this.data[key] === 'string' && this.data[key])
+      .map((key) => this.secrets!.setSecret(key, this.data[key]));
+    Promise.all(writes).then(() => {
+      for (const key of present) delete this.data[key];
+      this.save();
+    }).catch(() => { /* kept in plaintext for now; SecretStore logged why */ });
   }
 
   private load(): void {
@@ -114,11 +122,10 @@ export class SettingsService {
     return this.data[key] ?? (DEFAULTS as any)[key] ?? null;
   }
 
-  set(key: string, value: any): void {
+  /** Saves at once, except a provider key in the keychain, which is on disk when the promise resolves. */
+  set(key: string, value: any): Promise<void> | void {
     if (SECRET_SETTINGS.includes(key) && this.secretsEncrypted()) {
-      if (value) this.secrets!.setSecret(key, String(value));
-      else this.secrets!.deleteSecret(key);
-      return;
+      return value ? this.secrets!.setSecret(key, String(value)) : this.secrets!.deleteSecret(key);
     }
     this.data[key] = value;
     this.save();

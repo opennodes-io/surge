@@ -1,4 +1,5 @@
 import type { ToolCallData } from './components/McpToolCallBlock';
+import type { DiscoveryQuery, DiscoveryResult, IndexServer, IndexCategory } from '@surge/core/discovery';
 // Type declarations for the Surge preload bridge
 
 declare global {
@@ -43,7 +44,7 @@ declare global {
         disconnect: (serverId: string) => Promise<void>;
       };
       discovery: {
-        list: (params?: DiscoveryQuery) => Promise<{ servers: IndexServer[]; total: number }>;
+        list: (params?: DiscoveryQuery) => Promise<DiscoveryResult>;
         get: (slug: string) => Promise<IndexServer | null>;
         similar: (slug: string) => Promise<IndexServer[]>;
         categories: () => Promise<IndexCategory[]>;
@@ -81,6 +82,10 @@ declare global {
         configure: (cfg: { enabled?: boolean; port?: number; allowActions?: boolean }) => Promise<HubStatus>;
         token: () => Promise<string>;
         regenerateToken: () => Promise<string>;
+        approve: (id: string, allow: boolean) => Promise<boolean>;
+        onApproval: (callback: (data: ToolCallData) => void) => () => void;
+        onApprovalDone: (callback: (id: string) => void) => () => void;
+        calls: (limit?: number) => Promise<HubCall[]>;
       };
       clipboard: {
         writeText: (text: string) => Promise<boolean>;
@@ -182,7 +187,7 @@ export interface PrivateStatus {
   ollama: string;
   peers: string[];
   mdns: boolean;
-  discoveredPeers: Array<{ name: string; kind: string; origin: string }>;
+  discoveredPeers: Array<{ name: string; kind: string; origin: string; pinned: boolean }>;
   error?: string;
 }
 
@@ -205,6 +210,18 @@ export interface HubStatus {
   tools: string[];
   tokenPersisted: boolean;
   error?: string;
+}
+
+/** One call another app made through the hub (mirrors HubCallEntry from @surge/core/storage). */
+export interface HubCall {
+  id: string;
+  at: number;
+  tool: string;
+  risk: 'read' | 'action' | 'script';
+  scope: string | null;
+  decision: 'read' | 'allowed' | 'remembered' | 'declined' | 'no-answer' | 'cancelled' | 'page-changed' | 'actions-off' | 'unknown';
+  ok: boolean | null;
+  durationMs: number | null;
 }
 
 export const PRIVATE_AUTO_MODEL = 'private:auto-private';
@@ -286,47 +303,9 @@ export interface ConnectedServer {
   source?: string;
 }
 
-// ── Discovery (MCP_Index) ──────────────────────────────
-export interface DiscoveryQuery {
-  search?: string;
-  category?: string;
-  sortBy?: 'quality' | 'stars' | 'downloads' | 'recent' | 'name';
-  limit?: number;
-  offset?: number;
-  hasUi?: boolean;
-  minScore?: number;
-  requiresAuth?: boolean;
-  isOfficial?: boolean;
-}
-
-export interface IndexServer {
-  id: string;
-  slug: string;
-  name: string;
-  description: string;
-  category?: string;
-  qualityScore?: number | null;
-  uiType?: 'mcp-apps' | 'mcp-ui' | null;
-  supportsUi?: boolean;
-  supportsDiscovery?: boolean;
-  discoveryUrl?: string | null;
-  requiresAuth?: boolean;
-  isOfficial?: boolean;
-  isVerified?: boolean;
-  stars?: number;
-  weeklyDownloads?: number;
-  npmPackage?: string | null;
-  installCommand?: string | null;
-  trustTier?: 'verified' | 'trusted' | 'community' | 'unverified';
-  source?: string;
-}
-
-export interface IndexCategory {
-  id?: string;
-  name: string;
-  slug: string;
-  serverCount?: number;
-}
+// ── Discovery: the index (mcprating.io by default) and the official MCP Registry ──
+// The shapes come from @surge/core/discovery, which normalizes both sources.
+export type { DiscoveryQuery, DiscoveryResult, DiscoveryOrigin, IndexServer, IndexCategory } from '@surge/core/discovery';
 
 // ── Local bookmarks / history (renderer view) ──────────
 export interface Bookmark {

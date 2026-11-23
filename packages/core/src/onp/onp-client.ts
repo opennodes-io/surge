@@ -1,6 +1,6 @@
 /// <reference path="./opennodes.d.ts" />
 // OpenNodes (ONP) registry access — model/inference-endpoint discovery, the sibling of
-// discovery/ (which browses MCP_Index for tool servers) — over the published @opennodes/cli
+// discovery/ (which browses MCP server directories for tool servers) — over the published @opennodes/cli
 // OnpClient. This module adds the typed OnpOffering view, timeouts, and node-card resolution.
 // Node-only (the package uses node:crypto/fs): keep it behind the onp/ai subpaths.
 // Registry API: https://github.com/opennodes-io/opennodes (ONP-3).

@@ -86,7 +86,7 @@ contextBridge.exposeInMainWorld('surge', {
     disconnect: (serverId: string) => ipcRenderer.invoke('mcpweb:disconnect', serverId),
   },
 
-  // Discovery (MCP_Index registry, with quality ratings)
+  // Discovery (an index such as mcprating.io, with the official MCP Registry as the fallback)
   discovery: {
     list: (params: any) => ipcRenderer.invoke('discovery:list', params),
     get: (slug: string) => ipcRenderer.invoke('discovery:get', slug),
@@ -180,6 +180,19 @@ contextBridge.exposeInMainWorld('surge', {
     configure: (cfg: { enabled?: boolean; port?: number; allowActions?: boolean }) => ipcRenderer.invoke('hub:configure', cfg),
     token: () => ipcRenderer.invoke('hub:token'),
     regenerateToken: () => ipcRenderer.invoke('hub:regenerateToken'),
+    // An app's action waiting for Allow / Deny, and its card going away (answered, timed out, app gone).
+    approve: (id: string, allow: boolean) => ipcRenderer.invoke('hub:approve', id, allow),
+    onApproval: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('hub:approval', handler);
+      return () => ipcRenderer.removeListener('hub:approval', handler);
+    },
+    onApprovalDone: (callback: (id: string) => void) => {
+      const handler = (_event: any, id: string) => callback(id);
+      ipcRenderer.on('hub:approvalDone', handler);
+      return () => ipcRenderer.removeListener('hub:approvalDone', handler);
+    },
+    calls: (limit?: number) => ipcRenderer.invoke('hub:calls', limit),
   },
 
   clipboard: {

@@ -15,15 +15,17 @@ Surge is a desktop "browser for MCP" **and the reference desktop client for Open
   - **On `409 price_changed`: re-fetch the card, re-apply the user's spend policy, then retry once or surface** (ONP-4).
   - Receipts arrive in the `ONP-Receipt` response header, inline JWS **or a URL**. Streaming responses carry the URL, which is materialized after the stream ends. Verify the node's JWS (`/.well-known/jwks.json`), `amount = usage × pinned price`, and `card_revision` = the pinned one. With the OpenAI SDK, use `.withResponse()` to read headers.
   - **Enforce a user-configured spend policy before invocation**: max price per MTok, per-request ceiling (`max_tokens` × pinned price), per-day budget, allowed schemes, minimum tier (ONP-5).
-  - Tiers: `unverified / community / verified / attested` (+ `disputed`, `suspended`). `@opennodes/core` ≥0.1.1 adds client-side `local` / `lan` tiers (your own machines, fully trusted).
+  - Tiers: `unverified / community / verified / attested` (+ `disputed`, `suspended`). `@opennodes/core` ≥0.1.1 adds client-side `local` / `lan` tiers (your own machines). Since 0.1.24 a `lan` offering counts as your own network only with `lan.pinned: true`; unpinned, it ranks as `unverified`.
   - Claimed vs measured vs attested values are never blended — show the basis (`hardware.basis`, `observed.*`, `serving.context_capped_from`).
   - `POST /v0/recommend` accepts `features` only, so the prompt never leaves the machine.
   - Credentials are per upstream **hostname** (the gateway's `keys` map). Never send one key to every node: registration is open.
 - Spec: `spec/ONP-1..6` in the opennodes repo (still the full set as of 2026-10-06). Composite Nodes (ONP-7) and Node Performance Reports are planned there; Surge should be the first client to surface them when they land.
 
-### Using the published packages (adopted 2026-10-06: `@opennodes/core` 0.1.1, `@opennodes/cli` 0.1.2)
+### Using the published packages (adopted 2026-10-06; since 2026-11-21 `@opennodes/core` 0.1.24, `@opennodes/cli` 0.1.33)
 
 Both are dependencies of `@surge/core` **and** `apps/desktop`; the desktop entry is what keeps electron-vite from bundling them.
+
+**Pinned exactly, all three together.** `@opennodes/ollama-router` pins its core and cli to exact versions, so Surge pins the same ones (no caret). Otherwise a newer core would be installed beside the router's, a nested copy that the hoisted layout and `check-node-modules.cjs` handle badly. Bump the three as a set, then check that `node_modules` holds one copy of each.
 
 **What Surge uses**
 - `OnpClient`: search, estimate, and `resolveCard` (ONP-2 schema validation plus card-signature verification).
@@ -34,8 +36,8 @@ Both are dependencies of `@surge/core` **and** `apps/desktop`; the desktop entry
 - **No types.** The packages ship plain ESM JavaScript, so `packages/core/src/onp/opennodes.d.ts` declares the surface Surge uses. Files that import the packages pull it in with `/// <reference path="./opennodes.d.ts" />`, so it also works inside the desktop's TypeScript program.
 - **Node-only.** The `@opennodes/core` barrel imports `node:crypto`, `node:http` and `node:fs`; at load, `node:fs` reads `schema/open-node.schema.json` relative to `import.meta.url`.
   - **Never bundle them**, or the schema path breaks.
-  - The desktop main process is CJS and loads them with `require()`. This works because Electron 35 ships Node 22.16, which can `require()` ESM.
-  - Root `engines` is now `>=22.5`.
+  - The desktop main process is CJS and loads them with `require()`. This works because Electron's Node can `require()` ESM: stable in Node 24.22 (Electron 45), experimental in 22.16 (Electron 35).
+  - Root `engines` is now `>=22.12` (Electron 45's own floor).
 - **Module split in `onp/`.**
   - Platform-agnostic (no Node APIs, no `@opennodes` imports): `onp-offerings.ts`, `onp-receipts.ts`, `onp-policy.ts`.
   - Node-only: `onp-client.ts`, `onp-advisor.ts`.
@@ -43,8 +45,15 @@ Both are dependencies of `@surge/core` **and** `apps/desktop`; the desktop entry
 - **No timeouts in `OnpClient`.** Its fetches take no `AbortSignal`, so `onp-client.ts` races each call against an 8s timeout and the request finishes in the background.
 - **Don't route chat through `OnpClient.invoke`.** It doesn't stream and drops tools (it sends only `{model, messages, max_tokens}`).
 
-**`@opennodes/ollama-router` 0.1.2** is a desktop-only dependency (it starts an HTTP server, so it never goes in core).
-- Private mode starts it in the main process (`apps/desktop/src/main/services/private-router.ts`) on a free loopback port with `registry: null`, so only the local Ollama and LAN peers are served.
+**`@opennodes/ollama-router` 0.1.27** (0.1.2 until 2026-11-21) is a desktop-only dependency (it starts an HTTP server, so it never goes in core).
+- Private mode starts it in the main process (`apps/desktop/src/main/services/private-router.ts`) on a free loopback port with `registry: null`, so only the local Ollama and LAN peers are served. The library keeps no files: no ledger, no reputation file, and a new token each run.
+- **Who may call it** (the router's `access.js`, OpenNodes spec revision 10; 0.1.2 predates it, with wildcard CORS and no token):
+  - `/router/*` (catalog, peers, receipts, advice) needs the token the router returns. `startPrivateRouter` returns `{ origin, token }`, and only `AiService` holds the token. It is sent on `/router/catalog` only, and never appears in `private:status`, the renderer or logs.
+  - The model routes and `/api/show` serve local apps without the token: loopback, a local Host name, and no browser Origin except a local page. Surge's main process qualifies.
+  - So a web page can't add a peer, read the catalog or prompt the models, and a DNS-rebinding name is refused.
+- **LAN peers:** a peer counts as your own network only when it is pinned, meaning its card verifies against a pinned key (RFC 7638 thumbprint) at the address the card names.
+  - Unpinned peers, which includes every plain Ollama server and every peer in `private.peers`, are listed and can be picked by name. Auto (private) skips them.
+  - An mDNS-found node is used only when pinned. Surge passes no `pins` yet (see follow-ups).
 - mDNS LAN discovery is off unless `private.mdns` is set, because binding UDP 5353 can trigger a Windows firewall prompt.
 - Types live in `apps/desktop/src/main/services/ollama-router.d.ts`.
 
@@ -61,8 +70,8 @@ packages/core/      @surge/core — platform-agnostic TS, source-only (consumers
   ai/               multi-vendor LLM service (Gemini, Groq, Claude, Mistral, Ollama, vLLM, **onp**) + tool calling
   onp/              offerings model, registry client (@opennodes/cli), advisor (@opennodes/core), receipts (WebCrypto Ed25519), spend policy; the `onp` provider lives in ai/ai-service.ts
   mcp/ orchestrator/ discovery/ storage/ ui/ webmcp/ ports/
-apps/desktop/       @surge/desktop — Electron 35 (electron-vite), thin IPC bridge, WebContentsView; main-process code in src/main/services/
-                    (secret-store.ts = safeStorage keychain, private-router.ts = embedded ollama-router)
+apps/desktop/       @surge/desktop — Electron 45 (electron-vite), thin IPC bridge, WebContentsView; main-process code in src/main/services/
+                    (secret-store.ts = safeStorage keychain, async API, private-router.ts = embedded ollama-router)
                     electron-builder.yml + packaging/ (icon source, afterPack check) + resources/ (runtime icons) = the Windows installer
 apps/mobile/        @surge/mobile — Capacitor scaffold (browser features gated off; imports only @surge/core/discovery)
 servers/bookmarks-history-mcp/   standalone MCP server (stdio + HTTP), tsup
@@ -88,8 +97,35 @@ Verification scripts for the ONP integration:
     - markup split across chunks never leaks, while plain text with `<` arrives whole;
     - the prompt uses signatures;
     - schema-echoed, fenced and unclosed calls are read, and an unreadable one is shown as text.
+- `packages/core/test/verify-local-access.ts` (in `pnpm test`): 46 checks, no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx ../../packages/core/test/verify-local-access.ts`.
+  - **Private router** (the real `@opennodes/ollama-router` with mock Ollama and peers):
+    - A web page's `POST /router/peers` is refused, sent plain (no preflight) or as JSON. So is its preflight, and so is another local process without the token. The page's server is never probed.
+    - `/router/catalog` needs the token. Pages can't list or prompt the models, and a rebinding Host is refused.
+    - Surge still lists the private models (with `/api/show`'s "tools via prompt"), answers through the router, and never sends the token to Ollama.
+    - An unpinned LAN peer is listed, left out of Auto (private), and answers when picked by name. A saved peer that is offline doesn't stop the router from starting.
+  - **Surge hub** (the real `SurgeHub` behind the MCP SDK client):
+    - A read runs free. An action waits for the card. Once per site; a different site asks; scripts ask every time.
+    - Opening a page asks for the site it opens. Deny doesn't run the call.
+    - A client that disconnects cancels its card, and so does one whose request times out. Actions turned off while a card waits refuse the call. So does a page that moved to another site, and a card opened before approvals were forgotten can't add its site back.
+    - An unknown tool is answered as unknown, even on an exposed server, and a long tool name is clipped in the log.
+    - Bookmarks writes ask. A wrong token is refused.
+    - Every call is logged with its decision, and no arguments are kept.
+- `servers/bookmarks-history-mcp/test/http-access.ts` (in `pnpm test`): 42 checks on the built `dist/http.js` (port 0, temp DB), no network. Run `pnpm --filter @surge/bookmarks-history-mcp exec tsx test/http-access.ts` after a build.
+  - Refused, each with the token so only one check is left to stop it: no or a wrong token (401, and before a 5 MiB body is read), a spoofed Host (403, also without a token), a web page's preflight, simple POST, JSON POST and same-site page (403, no CORS grant, nothing written), a body over 4 MiB declared or chunked (413).
+  - Let in: `Sec-Fetch-Site: none` without `Origin` (a user-opened address, which page script can't fake).
+  - The 413 also reaches a client that sent `Connection: close`. The server reads an oversized body to the end before answering: answered at once, that client got a reset instead on Windows (9 of 10 declared 5 MiB bodies, 4 of 10 chunked).
+  - The SDK's Streamable HTTP client with the token lists, writes and reads, and no response has CORS headers.
+  - At 32 sessions the least recently used idle one is closed, never one with an open GET stream; a closed id gets 404.
+  - A generated token is printed and works; a token under 16 characters stops the start.
 - `packages/core/test/verify-onp.ts`: a **local** registry with the fixture Echo node. Bundle it with esbuild (externals `@google/generative-ai @libsql/client @modelcontextprotocol/sdk openai`), then run it with node.
 - `packages/core/test/verify-onp-gateway.mjs`: Step 0, Surge's vllm-custom provider against the `onp` gateway.
+
+Verification for MCP discovery and stdio servers:
+- `packages/core/test/verify-discovery.ts` (73 checks, in `pnpm test`): a mock index in mcprating.io's shape, a mock official registry and local stdio servers; no network. Covers:
+  - the index: its own tier wins and its safety cap holds; Surge's fallback rule matches mcprating.io's thresholds; delisted rows are unverified; an unscored row shows no safety score; safety, flags and the start test come through; `sortBy=tested`, with a retry by quality where it's unknown; a 400 isn't a fallback; a search's filters, which the index drops, are applied by Surge (largest page, page size, `total`, the note, no later page), and an index that applies them loses nothing; no install command is made up; no request carries a partner key or any other key
+  - the official registry: the fallback on a closed port and on a 500, and a source of its own; the adapter (remotes, npm pinned, pypi via uvx, oci not run, templated endpoints and inactive or older entries skipped); filters it can't apply; identifiers and versions that npx or uvx would read as a flag, URL, tarball or `owner/repo` get no command
+  - the desktop settings migration (only the old localhost:3000, only once), imported from `apps/desktop/src/main/services/settings-migrations.ts`
+  - the stdio environment: a planted `FAKE_SECRET` doesn't reach a fixture server (`test/fixtures/env-echo-server.mjs`), nor after a saved-server restart; the built bookmarks server starts with `SURGE_DB_PATH` from its own `env`
 
 **OpenAI SDK quirks on the ONP path:**
 - By default the SDK **resends 409s** with the same headers, so ONP clients are built with `maxRetries: 0`.
@@ -100,9 +136,9 @@ Verification scripts for the ONP integration:
 - Provider streams must be awaited inside `streamChat`'s try (so failures reach `onError`), and `runToolLoop` catches a rejected `streamChat`. Otherwise an API error leaves the IPC call unanswered ("reply was never sent").
 - `describeGeminiError` turns the SDK's error into one line ("Gemini 402 Payment Required: …").
 
-**Driving the real app** (no Playwright in the repo): run `pnpm --filter @surge/desktop build`. Then from `apps/desktop` run `electron . --remote-debugging-port=9333 --user-data-dir=<tmp dir>`. Drive the renderer page (`…/renderer/index.html`) over CDP: `Runtime.evaluate` and `Page.captureScreenshot`; Node 24 has a global `WebSocket`. `--user-data-dir` keeps the user's real `surge-settings.json` and `surge.db` untouched. Call `window.surge.window.resize('expanded')` before screenshotting dropdowns.
+**Driving the real app** (no Playwright in the repo): run `pnpm --filter @surge/desktop build`. Then from `apps/desktop` run `electron . --remote-debugging-port=9333 --user-data-dir=<tmp dir>`. Since Electron 42 the binary isn't downloaded on install: `electron .` fetches it on first run, and `pnpm dev` / `preview` run `install-electron` first, because electron-vite 3.1 reads `path.txt` itself ("Electron uninstall" otherwise). Drive the renderer page (`…/renderer/index.html`) over CDP: `Runtime.evaluate` and `Page.captureScreenshot`; Node 24 has a global `WebSocket`. `--user-data-dir` keeps the user's real `surge-settings.json` and `surge.db` untouched. Call `window.surge.window.resize('expanded')` before screenshotting dropdowns.
 - The packaged app drives the same way (`release/win-unpacked/Surge.exe --remote-debugging-port=… --user-data-dir=…`). Add `--inspect=<port>` to reach its main process, where `process.mainModule.require(...)` works.
-- **Test the installed copy, not `win-unpacked`, for module problems.** `win-unpacked` sits inside the repo, so Node's lookup walks up into the repo's `node_modules` and hides modules missing from `app.asar`. A per-user install is `Surge-Setup-*.exe /S`; uninstall with `"%LOCALAPPDATA%\Programs\surge\Uninstall Surge.exe" /currentuser /S`. Both are silent, and user data is kept.
+- **Test the installed copy, not `win-unpacked`, for module problems.** `win-unpacked` sits inside the repo, so Node's lookup walks up into the repo's `node_modules` and hides modules missing from `app.asar`. A copy of `win-unpacked` outside the repo (e.g. in a temp folder) has the same fidelity without replacing the installed app. A per-user install is `Surge-Setup-*.exe /S`; uninstall with `"%LOCALAPPDATA%\Programs\surge\Uninstall Surge.exe" /currentuser /S`. Both are silent, and user data is kept.
 
 ## Known state (2026-10-09)
 
@@ -160,7 +196,12 @@ Verification scripts for the ONP integration:
     - Managed in Settings → Advanced → API keys by host, with host suggestions from listed imported catalogs.
     - `ai.onpApiKey` is retired: no longer read, only migrated out of plaintext.
 - **Private mode** (one click: the lock beside the model picker):
-  - `private.enabled` starts the embedded ollama-router. `AiService.setPrivateRouter(origin)` then lists only `private:*` models from its `/router/catalog` (local and LAN tiers), led by `private:auto-private`, the router's advisor restricted to local and LAN.
+  - `private.enabled` starts the embedded ollama-router. `AiService.setPrivateRouter({ origin, token })` then lists only `private:*` models from its `/router/catalog` (local and LAN tiers, read with the router token; a refused catalog lists nothing). They are led by `private:auto-private`, the router's advisor restricted to this machine and pinned LAN nodes.
+  - Router 0.1.27 (2026-11-21): unpinned LAN models are marked "not pinned, so Auto (private) skips it", and Auto's count leaves them out. The Settings text says Surge can't pin a node yet.
+    - Verified in the dev build and in the packaged `win-unpacked` exe, on temp profiles against the real local Ollama: `gemma4`, `gemma3:12b` ("tools via prompt") and `llama3.2` were listed.
+    - Against the app's live router, a page-origin `POST /router/peers` got 401, its preflight 403 with no CORS header, and `/router/catalog` without the token 401.
+    - `electron-builder --win --dir` passes `check-node-modules.cjs` (34 packages), under both the pnpm and npm collectors. `app.asar` holds one copy each of router 0.1.27, core 0.1.24 and cli 0.1.33.
+    - On the installed copy (2026-11-22, the Electron 45 build of main, temp profile): the router started, `/router/peers` without the token got 401, and a page origin got 403 with no CORS grant. Listing the local Ollama models wasn't checked there.
   - Every other model is refused, and the registry isn't contacted while private mode is on.
   - The previous model is restored when private mode is turned off. Private mode is restored at startup.
   - Static LAN peers and opt-in mDNS are set in Settings → Advanced → Private mode.
@@ -202,7 +243,7 @@ Verification scripts for the ONP integration:
     - Deny, no answer in 5 minutes, or a closed window: the gate throws. The model gets "The user declined this action (…). Don't try it again in this turn…", and the block shows "Declined by you".
   - **Per chat:** the renderer sends a `chatKey` with each turn (`crypto.randomUUID()`, renewed by New Chat and by reopening a chat from history). Main keeps an allowed-scope set per key, for the last 50 chats, in memory only.
   - **Known limit:** opening pages runs freely, so a steered model could still put data in a URL it opens. Asking for every page would make browsing unusable; clicks, forms and scripts, which act with the user's sign-ins, are what ask.
-  - The hub is unchanged: off by default, and read-only unless `hub.allowActions`.
+  - The Surge hub uses the same gate and card for other apps' actions since 2026-11-21 (see "Surge hub"), with its own risks (`hubToolRisk`) and its own allowed set.
   - **Verified:**
     - `verify-approvals.ts` (21 checks, in `pnpm test`): risks; once per site; a different site asks; Deny isn't remembered; scripts ask every time; servers are their own scope; the next turn of a chat remembers and a new chat asks; and a denied call never runs in the tool loop, with the model hearing it was declined.
     - `verify-core.ts`: a real MCP server's `readOnlyHint` survives into Surge's tool list.
@@ -215,7 +256,7 @@ Verification scripts for the ONP integration:
   - *Agent code sandbox escape* (`webmcp/agent-code-sandbox.ts`, the opt-in code path of per-site agents, reached only after the user approves an agent's code).
     - The `vm` context was handed the worker's own `Object`, `Array`, `JSON` and so on, plus a structured-clone `input`. Their constructors lead to the outside `Function`, which the context's `codeGeneration: { strings: false }` doesn't cover. So `Object.constructor('return process')()` reached the worker's `process`, `fetch` and `require`.
     - Now the context holds no outside object, only its own built-ins and two strings (the input JSON and the page text). Input is parsed, the code run and the result serialized inside the context under one timeout, with `microtaskMode: 'afterEvaluate'`. The worker gets `env: {}`.
-    - `verify-agents.ts` probes escapes through Object, input, arrays, page text, functions and errors (all blocked), checks that no Node globals exist and that a runaway loop or promise job times out. It passes under Node 24 and under Electron's Node 22.16 (`ELECTRON_RUN_AS_NODE=1 electron --import tsx test/verify-agents.ts`).
+    - `verify-agents.ts` probes escapes through Object, input, arrays, page text, functions and errors (all blocked), checks that no Node globals exist and that a runaway loop or promise job times out. It passes under Node 24, under Electron 35's Node 22.16 and under Electron 45's Node 24.22.3 (`ELECTRON_RUN_AS_NODE=1 electron --import tsx test/verify-agents.ts`; manual, not in `pnpm test`).
     - The old "sandbox blocks require" check passed only because `require` isn't a name in the context; it never tried the escape.
   - *Duplicate saved servers.*
     - Manually added servers got `manual-${Date.now()}` ids, and saved servers were deduped by id only, so a real settings file held six copies of one URL.
@@ -274,6 +315,110 @@ Verification scripts for the ONP integration:
       - Sort, the third-click reset and the filter ("2 of 10 rows") worked with no model request.
       - A greeting went out without `ui__render`, while a comparison and its follow-up got it; Off and Every turn behaved as named.
     - Real model: Auto (private) on a local gemma drew a compare view in 54 s. It gave both cards the same title, so the schema now asks for "title (names the option)". After phase 2 it drew one in 78 s, with "Python" and "JavaScript" as the titles; the build was running at the same time.
+- **MCP discovery and the stdio environment** (fixed 2026-11-21 for 0.1.8; `discovery/discovery-client.ts`, `ServerPanel.tsx`, Settings → Advanced → MCP Server Directory). Phase 1 of the machine-internet review: fixes only, no embedded tool search, no tool-poisoning claims. Four defects were in 0.1.7:
+  - **Source.** `mcp.indexUrl` defaulted to `http://localhost:3000`, and the fallback, `registry.mcp.so`, is NXDOMAIN, so installed users most likely saw an empty list.
+    - The default is now `https://mcprating.io` (`DEFAULT_MCP_INDEX`). Its `/api/v1/servers` is the shape the client already read.
+    - `settings-migrations.ts` drops a stored `localhost:3000` once (marker `mcp.indexUrlMigrated`), so a later deliberate choice stays.
+    - The fallback is the official MCP Registry (`OFFICIAL_MCP_REGISTRY`, `/v0/servers?version=latest`) through `normalizeRegistryServer`:
+      - only active, latest entries;
+      - `remotes` become endpoints (templated URLs skipped);
+      - npm runs as `npx -y id@version`, pypi as `uvx id`; oci, nuget and mcpb get no command.
+      - Anyone can publish there, so a name must look like a package name (`npmPackageName`, a PyPI pattern) and a version like a version. Otherwise there's no command, since `--call=…`, a URL, a tarball or `owner/repo` would also run.
+      - It searches names only and rates nothing, so its entries have no tier. A filter it can't apply (category, UI, official, score) returns nothing, with a note.
+    - The Settings field takes the registry too (`https://registry.modelcontextprotocol.io`, or any base ending in `/v0`). Empty means the registry alone. `mcp.registryUrl` (no UI) overrides the fallback; the tests use it.
+    - `McpManager.discoverServers` (IPC `mcp:discover`) uses the same `DiscoveryClient`.
+  - **Tiers.** `trustTier` came from `qualityScore` alone, so a server mcprating.io caps for safety could show as "trusted".
+    - Now the source's own `trustTier` wins (its `unknown` shows as `unverified`).
+    - Surge's rule (`deriveTrustTier`) runs only without one. It is mcprating.io's rule (MCP_Index `src/scoring/trust-tier.ts`):
+      - verified: `isVerified`, or official with quality 80+;
+      - trusted: quality 60+ with a public repo and an install command or endpoint;
+      - community: quality 30+;
+      - safety under 50 caps it at community, under 30 at unverified.
+    - A row with a `delistedReason` is unverified, whatever tier it carries. The list and search drop delisted rows; the slug routes (`getServer`, `/servers/lookup`) still return them. mcprating.io has sent `trustTier: "unknown"` for them since MCP_Index 0022255; before that it sent their old tier.
+    - `tierBasis` says which, in the badge's tooltip.
+    - `trustTier`, `safetyScore`, `safetyBand` and `safetyFlags` are documented and stable (`/api/docs/json`, on `/servers`, `/servers/{slug}` and `/servers/lookup`, since 2026-11-21): new fields and flags may be added, but names and meanings won't change. Other fields are read defensively.
+  - **Evidence, not a bare tier.** Each listing shows its safety score (band colour) and flags, and the start test: "passed", "needs credentials", "failed" or "not run", with the date and tool count in the tooltip. The index fields are `safetyScore`, `safetyFlags`, `verification.latestOutcome`, `metadata.verification.tools`, `metadata.remotes` and `delistedReason`.
+    - The safety score is a heuristic over repository and package metadata, not a scan, and the tooltip says so.
+    - The band comes from the score with the thresholds documented for `safetyBand` (80 / 50), so the badge always agrees with the number.
+    - A row with no quality score shows no safety score: one added since the index's last scoring pass can read 100 without being assessed.
+  - **Order.** The panel defaults to "Tested first" (`sortBy=tested`, on mcprating.io since 2026-11-11): servers that passed the start test come first.
+    - An index that rejects it with a 400 is asked again by quality.
+    - Any other 400 (an unknown category, say) is the index answering, so it shows the index's reason rather than falling back.
+    - The parameters are `search` and `sortBy`; `q` and `sort` would be silently ignored.
+  - **Filters with a search** (fixed 2026-11-21). With `search` set, mcprating.io applies `category` and `sortBy` but drops `hasUi`, `isOfficial`, `minScore` and `requiresAuth` (`search=github&minScore=70` returned 41s), so "Official only" and "Has UI" showed rows that didn't match. Not fixed upstream yet.
+    - For a search with any of them, `listServers` asks for 100 rows (the API's largest page; more is a 400), filters on `supportsUi`/`uiType`, `isOfficial`, `qualityScore` and `requiresAuth`, and keeps the requested page size.
+    - `total` counts the matches found. When the page was full and too few matched, the note says only the first 100 were checked.
+    - The filters are still sent, so a fixed index loses nothing. A later page (`offset` > 0) is empty, since the index's offsets count unfiltered rows; the panel doesn't page.
+    - Queries without a search are unchanged.
+  - **Disclosure.** One line under "Discover Servers" names the source. For mcprating.io it says it has the same maintainer as Surge, and that the source can be changed in Settings → Advanced. A fallback says the index didn't answer. No key is ever sent (mcprating.io's promoted results need `x-partner-key`).
+  - **No made-up commands.** A listing without a command, npm package or endpoint used to connect as `npx -y <slug>`, which runs whatever npm package has that name (or, for `owner/repo`, a GitHub repository).
+    - `connectConfigFor` returns null for it, and Connect is disabled.
+    - Hosted listings connect to their endpoint: 37 of mcprating.io's top 100 are remote-only.
+    - `requiresAuth` is true when the index says so **or** the endpoint has an Authorization (or required, or secret) header: the live API sends `requiresAuth: false` beside a secret Authorization header.
+  - **Environment.** stdio servers got `{...process.env, ...config.env}`, so every variable in Surge's environment reached every server.
+    - Now they get `stdioServerEnv`: the SDK's `getDefaultEnvironment()` plus `config.env`. On Windows that's APPDATA, HOMEDRIVE, HOMEPATH, LOCALAPPDATA, PATH, PROCESSOR_ARCHITECTURE, SYSTEMDRIVE, SYSTEMROOT, TEMP, USERNAME, USERPROFILE and PROGRAMFILES; elsewhere HOME, LOGNAME, PATH, SHELL, TERM and USER. On Windows, libuv also adds LOGONSERVER, USERDOMAIN and WINDIR.
+    - **Behaviour change:** a server that read something from Surge's environment now needs it in its own `env`, and there's no UI for that yet (see the follow-ups). That covers tokens (a `GITHUB_TOKEN`, say), and also proxy and CA settings (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`). So behind a proxy, `npx` and `uvx` downloads can fail. Say so in the 0.1.8 release notes.
+  - `.badge-yellow` and `.badge-red` had no CSS rule, so caution and risk badges rendered unstyled. They're in `design-system.css` now.
+  - **Verified:**
+    - `verify-discovery.ts` (above).
+    - On Windows, through `McpManager` with the scoped environment: `npx -y @modelcontextprotocol/server-everything` started (16 tools; echo answered), and `python` resolved from PATH, as `uvx.exe` would. `uvx` itself isn't installed on this machine, so it's untested.
+    - In the built Electron app, launched with `FAKE_SECRET` in its own environment, through `window.surge.mcp.connect`: the env-echo fixture (via `node` on PATH) saw only the safe list, its own `env` and libuv's three, and `npx -y` server-everything started.
+    - In the app over CDP, with a throwaway profile seeded with the 0.1.7 value:
+      - the stored `localhost:3000` was removed and mcprating.io applied;
+      - the panel listed 24 servers from mcprating.io with tier, safety, flags, start test and the maintainer note;
+      - an index on a closed port showed the official registry's list with the fallback note;
+      - Settings → MCP Server Directory reported "mcprating.io answered (104,791 servers)";
+      - dark and light.
+- **Dependency security** (2026-11-21, for 0.1.8; branch `deps/security-0.1.8`): 202 open Dependabot alerts → 106, none of them shipped except Electron's.
+  - **What ships** decides what matters:
+    - the Electron binary;
+    - what electron-vite bundles into `dist/` (check with `electron-vite build --sourcemap` and read the maps' `sources`);
+    - the asar's `node_modules`.
+  - Of the alerted packages that is `electron`, the MCP SDK, `@hono/node-server` (the hub's transport), `zod` (via the SDK) and `fast-uri` (via ajv).
+  - Installed but never bundled: the SDK's express and hono. The hub and the bookmarks server use `node:http`.
+  - Updated: SDK 1.32.2, fast-uri 3.1.9, and `@hono/node-server` 2.1.11.
+    - The `@hono/node-server` bump is a major. It is inside the SDK's own `^1.19.9 || ^2.0.5`, and v2 kept the public API. The pin-back option is 1.19.19.
+  - **zod 4.6.7** (commit `88794eb`, a major kept separate so it can be dropped). No zod 3 fix exists for its 2 high alerts.
+    - The bookmarks server needed `z.record(z.string(), …)`, and its `tools/list` lost `additionalProperties: false`.
+    - Without this commit, 108 alerts stay open, and zod's 2 highs are the only shipped ones outside Electron.
+  - **`pnpm.overrides`** in the root `package.json` are keyed to the vulnerable range only, e.g. `fast-uri@>=3.0.0 <3.1.9`. pnpm applies a range key to every spec that *intersects* it, peers included, so don't add a key that overlaps another major or a `>=` peer (an esbuild one did and was dropped). Delete an override once its parent's own range moves past it.
+  - **Left:**
+    - Electron 35.7.5: 89 alerts, plus Chromium 134, out of support since 2025-09. Fixed by Electron 45.4.1 (below, [#38](https://github.com/opennodes-io/surge/pull/38)).
+    - `tar` 6 under `@capacitor/cli` 6 (the remaining critical, mobile tooling only); the fix is Capacitor 7.
+    - `extract-zip` (no fix), minimatch 11 / glob 14 / tsup 9 majors (build only).
+  - **SDK 1.30–1.32 behaviour changes:**
+    - stdio messages are capped at 10 MiB;
+    - client redirects stay on the endpoint's origin;
+    - OAuth credentials are bound to their issuer, and old ones still work.
+    - The hub reads its own body (4 MiB), so the SDK's new HTTP limit doesn't apply. The standalone server's HTTP mode does the same, with the same cap.
+  - **Electron 45.4.1** (2026-11-21; on `main` since [#38](https://github.com/opennodes-io/surge/pull/38), merged 2026-11-22; ships in 0.1.8): Chromium 156, Node 24.22.3, supported until about April 2027.
+    - Closes all 89 Electron alerts and extract-zip's 2 (Electron 45 uses `@electron/get` 5 and `@electron-internal/extract-zip`). Open alerts 106 → 15, none shipped; `pnpm audit --prod` is clean. What's left is `tar` 6 (Capacitor), minimatch, glob and esbuild, all tooling.
+    - **`SecretStore` uses safeStorage's async methods** (commit "Keychain: …", droppable; 45 deprecates the sync ones and 46 removes them). `SecretStore.open()` is awaited in main before the window and the IPC handlers exist, and decrypts everything once; reads are served from memory, so `SettingsPort`, the hub token and the OAuth store stay synchronous. Trade-off: every saved key now sits decrypted in main-process memory from startup (before, each read decrypted on demand). Writes are sealed and saved in order in the background, `will-quit` waits up to 3s for them, and the plaintext migration drops the settings-file copy only once the keychain copy is on disk.
+    - Ciphertext is the same either way ("v10", AES-GCM with the key in `<userData>/Local State`): the 0.1.8 build's keys read in 45, and 45's read in 35, so going back a version keeps them. `shouldReEncrypt` was false.
+    - `clipboard.writeText` is awaited (a Promise since 44). In 45 the main-process `clipboard` is async throughout: `read`, `readText`, `has`, `write` and `writeText` return Promises, and the old sync calls such as `availableFormats` are gone (`(await clipboard.read()).flatMap((i) => i.types)` lists the formats). Surge calls only `writeText`. The sandboxed preload uses none of the shims 45 removed. libsql's binding is N-API; `node:sqlite` isn't used.
+    - 42+ no longer downloads its binary on install (see "Driving the real app"). electron-builder 26.15.3 packages 45 unchanged; `check-node-modules` passes with the same 34 packages.
+    - electron-vite 3.1 knows Electron up to 35, so it targets `node22.14` / `chrome134` for 45. That's conservative and works.
+    - **WebMCP** (`document.modelContext`): absent by default in 45, in a test window and in Surge's browser view. Behind `--enable-blink-features=WebMCP`, `--enable-features=WebMCP` or `WebMCPTesting`, or `--enable-experimental-web-platform-features`, a page gets `registerTool`, `getTools` and `executeTool`. Surge ships no such switch.
+    - Verified on a copy of the packaged app outside the repo (26 CDP checks): the 17 of 0.1.8, plus libsql writes and reads, the clipboard, the browser view's page tools (`getPageContent` / `getLinks` in the chat path and through the hub), and no Electron deprecation warning in the main log. Also the keychain across 35 → 45 → 45 → 35 on one profile (a vLLM key reaching a mock endpoint, the hub token, the plaintext migration), and the quit flush forced through `--inspect`: a 1.5s seal exits at 1.6s with the key saved; a seal that never ends exits at the 3s cap. `pnpm dev` from a missing `path.txt` fetched the binary and ran 45.
+    - An attached `--inspect` session holds the process open at quit (Node waits for the debugger to disconnect), so detach before timing an exit.
+    - **Installed copy** (2026-11-22, with the user's OK): the installer was built from `main` 4fe6de7 in a fresh worktree, so without the npm Electron binary, as on CI (CI's Windows packaging passed on #38 too). It is 116 MB, `check-node-modules` matches 34 packages, and it installed with `/S` over 0.1.7. The build still says 0.1.7, since nothing is bumped. Driven over CDP, with `--inspect` on the main process for versions, the clipboard and `app.quit()`:
+      - **The user's real `%APPDATA%\Surge`, read only (15 of 15):**
+        - It runs from the install folder on Electron 45.4.1, Chromium 156.0.8078.100 and Node 24.22.3.
+        - The Gemini key 0.1.7 sealed (Electron 35, sync API) decrypts, and `surge-secrets.json` is byte-identical after the run (no re-seal).
+        - The settings read, and the only key added to the file is `mcp.indexUrlMigrated`. The real `surge.db` reads, and discovery works.
+        - A second launch exits. `app.quit()` exits in under 0.5s, with no renderer errors and no Electron deprecation warning.
+      - **A temp profile (26 of 28):**
+        - The 0.1.8 checks pass: the index migration, discovery, the router, and the hub (read, card, Deny, log, Settings → Advanced).
+        - libsql writes and reads, and the data is still there after a restart.
+        - A new key is sealed on disk, not stored as plain text, and reads after a restart.
+        - The single-instance lock works, and two quits are clean.
+        - The 2 failures were one warning in each run's main log: Node's punycode deprecation (below), not an Electron one. Neither run logged an Electron deprecation.
+      - **Not checked on the installed copy:**
+        - the clipboard, because it held data copied from a browser that a text probe would have replaced;
+        - the hub and private mode on the real profile, since turning them on changes its settings;
+        - a real chat;
+        - the browser view's page tools, which were checked on the packaged copy above.
+    - Node's `[DEP0040]` punycode warning at startup isn't from Electron 45. It comes from `openai` 4 → `node-fetch` 2 → `whatwg-url` 5 → `tr46` 0.0.3, which is bundled into `main.js`, and 0.1.7's `app.asar` has the same `require("punycode")`. It goes away with openai 5, which uses the built-in `fetch`.
 - **Social channels** (`apps/desktop/src/main/services/channels.ts`, `ChannelsPanel.tsx`): Instagram, TikTok, X, Facebook, YouTube, LinkedIn and Reddit, read in the embedded browser with the user's own sign-in (default session cookies).
   - "Signed in" means the site's session cookie is present (`sessionid`, `auth_token`, `c_user`, `LOGIN_INFO`, `li_at`, `reddit_session`). Sign out clears the domain's cookies.
   - **Summarize my feed** opens the feed and asks the chat to use `browser__collectFeed`. The tool waits up to 8s for posts, scrolls ≤ 8 screens, collects the outermost post elements (`article`, `[role=article]`, tweets, `ytd-*-renderer`, `shreddit-post`, LinkedIn and TikTok feed items), dedupes them, and returns text plus permalink.
@@ -284,11 +429,45 @@ Verification scripts for the ONP integration:
   - The client registration and tokens are stored per server URL in the keychain (`mcp.oauth.<host><path>#client|tokens`), so reconnects reuse them. Sign out forgets them.
   - `connectServer(config, { interactive: false })` (used by `reconnectSaved`) never opens a browser.
   - Tested against the SDK's `simpleStreamableHttp.js --oauth` example (MCP_PORT / MCP_AUTH_PORT), with `shell.openExternal` patched to a fetch through `--inspect`.
+- **Standalone bookmarks server, HTTP mode** (`servers/bookmarks-history-mcp/src/http.ts`, 2026-11-21; not in the installer). Before, it sent `Access-Control-Allow-Origin: *` with no token or body limit, so any web page could read and write bookmarks and history while it ran. Now it has the hub's checks, in this order:
+  - Host (403; plus the SDK's `allowedHosts`), then any `Origin`, or a `Sec-Fetch-Site` other than `none` (403; no CORS headers at all), then path, then the bearer token (401, SHA-256 digests through `timingSafeEqual`), then the body (4 MiB, 413 once the rest is read and dropped).
+  - It listens on 127.0.0.1. The token is `SURGE_MCP_HTTP_TOKEN` (16+ characters), or a generated one printed to stderr.
+  - Sessions stay stateful: at most 32, closed after 10 idle minutes, and the least recently used idle one makes room. A session with a request or GET stream open is never closed. An unknown id gets 404.
 - **Surge hub** (`apps/desktop/src/main/services/surge-hub.ts`): a local MCP server at `http://127.0.0.1:<hub.port, 4766>/mcp` exposing the `browser` and `bookmarks` virtual servers to other AI apps.
   - Off by default (`hub.enabled`). It needs a bearer token (`hub.token` in the keychain), uses the SDK's DNS-rebinding protection (`allowedHosts`), and is stateless: a server and transport per POST.
-  - Read-only unless `hub.allowActions`: 14 read tools, 27 with actions. Refused calls say how to allow them.
+  - Read-only unless `hub.allowActions`: 28 tools with actions (counted in the app on 2026-11-21). Refused calls say how to allow them.
   - Settings → Advanced → Surge hub shows the URL and token, with copyable setup for mcp.json (Cursor / LM Studio / VS Code), Claude Code, and Claude Desktop via `mcp-remote`.
   - Verified with the SDK's Streamable HTTP client: 401 without or with a wrong token, 403 for a spoofed Host, actions refused until allowed.
+  - **Actions ask first** (2026-11-21). Before, with `hub.allowActions` on, a call went straight to `mcp.callTool`, with no card and no record.
+    - **Risk** (`hubToolRisk` in `orchestrator/approvals.ts`): only `READ_ONLY_TOOLS` run freely. Everything else is an action, including `navigateTo`, scroll, hover and `waitForNavigation`, because the user isn't watching another app. `evaluateScript` is a script.
+    - **Scope:**
+      - Browser actions: the open page's site.
+      - `navigateTo`: the site it opens, using `BrowserService.navigateTo`'s normalisation. An Allow for "the browser" must not free every later navigation.
+      - Bookmarks: one scope.
+    - **Lifetime:** the hub keeps its own allowed set, never shared with a chat's. It is replaced with a new one (so a late Allow on an older card can't add its site back) when the hub restarts, actions are turned off or on, or the token is regenerated. The token is shared, so an Allow covers every app using the hub.
+    - **Code:** `SurgeHub` (`surge-hub.ts`) no longer imports Electron. `surge-hub-ipc.ts` wires it, and the test drives the real class.
+    - **The card:**
+      - `ask` sends `hub:approval` to the app UI and brings the window up (restoring it if minimized).
+      - `App.tsx` draws `ApprovalCard from="hub"` in a `.hub-approvals` overlay above every view, Settings included. An idle window grows while a card waits.
+      - The answer comes back through `hub:approve`. `hub:approvalDone` removes the card.
+      - No answer in 5 minutes, or a closed window: no-answer.
+      - Cancelled covers both ways an app gives up. It may disconnect (the response's `close`). Or its own request may time out: the SDK then sends `notifications/cancelled` on another POST and keeps the connection, and the hub matches it to waiting calls by JSON-RPC request id. Ids are per client, so a collision only cancels another app's card, which fails safe.
+      - An Allow doesn't run the call if the app left, actions were turned off, or the page moved to another site meanwhile (`page-changed`).
+      - While a card waits, main ignores `window:resize` 'compact' (`hubApprovalsWaiting`). Closing the picker or History would otherwise shrink the window back to the 160px bar under the card.
+    - **Log:**
+      - The `hub_calls` table (`SurgeStore.hubCalls`, kept 90 days) records tool, risk, site, decision (`read / allowed / remembered / declined / no-answer / cancelled / page-changed / actions-off / unknown`), whether it ran, and how long it took.
+      - Arguments are never kept: typed text can be a password.
+      - Settings → Advanced → Surge hub → Recent calls shows the last 20 (`hub:calls`).
+    - **Verified:**
+      - `verify-local-access.ts` (hub half).
+      - The dev build over CDP on a temp profile with `hub.port` 4799, driven by an SDK client acting as another app:
+        - `navigateTo` a local page waited 10.4 s on the card ("An app using the Surge hub asks: Open a page on 127.0.0.1:4788"), then ran on Allow;
+        - `evaluateScript` showed its code and "Run once", and Deny reached the app as declined;
+        - a read ran in 38 ms with no card;
+        - a bookmark save's card showed over Settings;
+        - from the idle 160px bar, the window grew to 700px with Allow in view, kept that size while History opened and closed, and went back to 160px after Deny;
+        - from a minimized window, the card restored it (visibility hidden → visible), and Allow saved the bookmark;
+        - Recent calls listed all of them.
 - **Window layout** (`apps/desktop/src/main/main.ts`): `layoutViews()` is the only code that sizes the two views. With the page attached, the app UI gets a 400px column (half the window if narrower) and the page the rest; otherwise the app UI fills the window.
   - Every window or attach change calls it: `window:resize`, `resize`, maximize, `browser:show` and `browser:hide`.
   - Before, `window:resize` (sent on every mode change) stretched the app UI full-width under the still-attached page, which left Settings half covered.
@@ -307,10 +486,10 @@ Verification scripts for the ONP integration:
     - Make the GIF from the MP4: fed the variable-duration concat directly, ffmpeg played every hold too short.
     - Park a synthetic pointer (`Input.dispatchMouseEvent`) before scenes, because the real pointer's hover state leaks into frames.
 - **Windows installer** (electron-builder 26, NSIS; `apps/desktop/electron-builder.yml`), built and verified 2026-10-07. **Released: Surge 0.1.1** (2026-10-07), **0.1.2** (2026-10-08), **0.1.3** (2026-10-09, adds Live UI), **0.1.4** (2026-10-10, Live UI phase 2), **0.1.5** (2026-10-11, private mode tools fix), **0.1.6** (2026-10-16, sandbox escape, saved-server and tool-name fixes) and **0.1.7** (2026-10-16, latest, actions ask first), GitHub pre-releases with an unsigned installer, from `release.yml`. The README and the OpenNodes surfaces link [Releases](https://github.com/opennodes-io/surge/releases); the links point at the page, not a version, so they don't go stale.
-  - Identity: product name "Surge", version 0.1.7, appId `io.opennodes.surge`. One-click per-user install into `%LOCALAPPDATA%\Programs\surge`, which comes from `extraMetadata.name`; otherwise the folder name comes from `@surge/desktop`. 88 MB. `publish: null`, so releases are never uploaded as a side effect of a build.
+  - Identity: product name "Surge", version 0.1.8, appId `io.opennodes.surge`. One-click per-user install into `%LOCALAPPDATA%\Programs\surge`, which comes from `extraMetadata.name`; otherwise the folder name comes from `@surge/desktop`. 116 MB with Electron 45 (88 MB with 35). `publish: null`, so releases are never uploaded as a side effect of a build.
   - Data: the installed app uses `%APPDATA%\Surge`. On this machine that's the same folder as an old March 2026 "surge" build's settings (Windows paths are case-insensitive), so the installed app inherits them. Unpackaged runs use `%APPDATA%\Surge Dev` unless `--user-data-dir` is given (`main.ts`), so dev never migrates the installed app's `surge.db`.
   - The main process takes a single-instance lock: a second launch focuses the window. The window and tray icons load from `resources/`, rendered from `packaging/icon.svg` by `electron packaging/render-icons.cjs`.
-  - **Electron is pinned exactly** (35.7.5): electron-builder rejects a range it can't resolve through the hoisted layout.
+  - **Electron is pinned exactly** (45.4.1; 35.7.5 before #38): electron-builder rejects a range it can't resolve through the hoisted layout.
   - **What ships:** only `dependencies` become node_modules: `@libsql/client` (native), `@opennodes/*` (must not be bundled), and `ajv` / `ajv-formats`. Everything else main uses (`@surge/core`, openai, the MCP SDK, Gemini, React) is a devDependency bundled by electron-vite.
   - **Why:** electron-builder's pnpm collector is wrong under `node-linker=hoisted`. It put top-level versions where nested duplicates belong (6 cases, including `openai`→`node-fetch` 3 instead of 2). It also dropped `ajv` once its other user became dev-only. One wrong copy, `formdata-node`→`web-streams-polyfill` 3.3.3, replaces `globalThis.ReadableStream`, and every `fetch()` body read in the packaged main then hangs: no registry models, no receipts.
   - **`packaging/check-node-modules.cjs`** (afterPack) fails the build when a shipped package is missing a dependency or differs from what Node resolves in the source tree. Keep it.
@@ -341,13 +520,20 @@ Verification scripts for the ONP integration:
 1. **Installers.** Surge 0.1.7 for Windows is the latest published release (see "Windows installer" above).
    - Each release: bump `apps/desktop` `version` in a PR, merge, push `v<version>`, then review and publish the draft (CONTRIBUTING.md). Publishing is the user's call. Check that it actually published: `gh api repos/opennodes-io/surge/releases` shows `draft=false`. A `v0.1.0` draft, built before the browser-mode fixes, was never published. It and its tag were deleted, so `v0.1.1` through `v0.1.7` are the only tags and releases.
    - Code signing is the user's decision (a certificate or Azure Trusted Signing). Unsigned, SmartScreen warns about an unknown publisher.
+   - Next: 0.1.8 (version bumped 2026-11-23). It has the MCP discovery and stdio environment fixes, router 0.1.27 and the hub's approvals, the dependency security updates and Electron 45 ("Known state"). The review's signal afterwards: installer downloads of 0.1.8.
+     - Release notes from SDK 1.32: a remote server that redirects to another origin no longer connects, and a single stdio message over 10 MiB is refused.
+     - Electron 45 ships in 0.1.8, not as its own 0.1.9: the user decided this on 2026-11-23. The installed copy is tested ("Dependency security" → Electron 45.4.1).
    - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
 2. **Follow-ups:**
-   - Approvals follow-ups, if wanted: a Settings list to review or forget allowed sites, and asking before opening a page with a query string to a new site after untrusted text was read (the exfiltration limit in "Actions ask first").
+   - Approvals follow-ups, if wanted: a Settings list to review or forget allowed sites (chat and hub), and asking before opening a page with a query string to a new site after untrusted text was read (the exfiltration limit in "Actions ask first").
+   - Private mode LAN pins: a `private.pins` setting passed to the router's `pins` option, with a field in Settings → Private mode. Router 0.1.27 gives Auto (private) and mDNS only pinned nodes. Get a node's key with `npx @opennodes/ollama-router --show-pin <origin>` on its own machine.
+   - Hub: per-app identity. All apps share one token today, so the card can't name the app and an Allow covers them all. Per-app tokens would fix both.
    - Fetch keyed hosts' offerings directly, so Auto and the suggestions see more than the top-40 listing.
    - Extend private mode to MCP servers (local-only) if the product wants "nothing leaves the machine" to cover tools.
    - Add a mobile subpath for the platform-agnostic `onp/` modules.
+   - A way to set a stdio server's `env`, now that Surge's environment isn't inherited. Secrets belong in the keychain, not in `mcp.savedServers`. The official registry's `environmentVariables` (with `isRequired` / `isSecret`) say what to ask for. Never fill them from Surge's own environment.
+   - Test a `uvx` server on Windows once uv is installed.
 3. **Live UI, next phases** (the MVP and phase 2 are in "Known state"):
    - Phase 2 follow-ups:
      - The "When it helps" cues are English only; other languages get no view unless the setting is "Every turn".

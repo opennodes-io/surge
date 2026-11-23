@@ -108,3 +108,23 @@
   width: 320px;
   z-index: 50;
 }
+
+/* ── Surge hub: another app's action waiting for Allow / Deny, over whatever the window shows ──── */
+.hub-approvals {
+  position: absolute;
+  top: 40px;
+  left: var(--space-sm);
+  right: var(--space-sm);
+  max-height: calc(100% - 48px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs, 4px);
+  z-index: 90;
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.hub-approvals .approval {
+  margin: 0;
+}

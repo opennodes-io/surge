@@ -1,8 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { IconX, IconSliders, IconBot, IconWrench, IconKey, IconCpu, IconNetwork, IconFile, IconPlug } from './Icons';
-import type { AiModel, ModelLevel, PrivateStatus, HubStatus } from '../types';
+import type { AiModel, ModelLevel, PrivateStatus, HubStatus, HubCall } from '../types';
 import SpendDashboard from './SpendDashboard';
 import './SettingsPanel.css';
+
+// What happened to each call in the hub log.
+const HUB_DECISIONS: Record<HubCall['decision'], string> = {
+  read: 'Read', allowed: 'Allowed by you', remembered: 'Allowed (site allowed earlier)', declined: 'Declined by you',
+  'no-answer': 'No answer', cancelled: 'Cancelled by the app', 'page-changed': 'Not run: the page changed', 'actions-off': 'Refused: actions off', unknown: 'Unknown tool',
+};
 
 interface SettingsPanelProps {
   selectedModel: string;
@@ -57,6 +63,9 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
   const [vllmModels, setVllmModels] = useState<string[]>([]);
   const [vllmStatus, setVllmStatus] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle');
   const [onpRegistryUrl, setOnpRegistryUrl] = useState('');
+  // Where the MCP Servers panel finds servers (mcp.indexUrl; '' = the official MCP Registry alone)
+  const [mcpIndexUrl, setMcpIndexUrl] = useState('');
+  const [mcpIndexCheck, setMcpIndexCheck] = useState<{ status: 'idle' | 'checking' | 'done'; text?: string; ok?: boolean }>({ status: 'idle' });
   const [onpModelCount, setOnpModelCount] = useState(0);
   const [onpStatus, setOnpStatus] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle');
   // OpenNodes spend policy (ONP-5); numbers are edited as text and committed on blur
@@ -78,6 +87,8 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
   const [hubToken, setHubToken] = useState('');
   const [hubTokenShown, setHubTokenShown] = useState(false);
   const [hubPort, setHubPort] = useState('');
+  const [hubCalls, setHubCalls] = useState<HubCall[]>([]);
+  const loadHubCalls = () => { window.surge.hub.calls(20).then(setHubCalls).catch(() => {}); };
   const [copied, setCopied] = useState('');
 
   useEffect(() => {
@@ -94,10 +105,12 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
       setHub(hubStatus);
       setHubPort(String(hubStatus.port));
       if (hubStatus.enabled) setHubToken(await window.surge.hub.token());
+      loadHubCalls();
       setOllamaHost(await s.get('ai.ollamaHost') || 'http://localhost:11434');
       setVllmEndpoint(await s.get('ai.vllmEndpoint') || '');
       setVllmModel(await s.get('ai.vllmModel') || '');
       setOnpRegistryUrl(await s.get('ai.onpRegistryUrl') || '');
+      setMcpIndexUrl(await s.get('mcp.indexUrl') || '');
       const p = await s.get('onp.policy') || {};
       setPolicy({
         maxRequestUsd: String(p.maxRequestUsd ?? 0),
@@ -192,6 +205,23 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
       setOnpStatus(count > 0 ? 'connected' : 'error');
     } catch {
       setOnpStatus('error');
+    }
+  };
+
+  // Save the MCP server source, then list one page through it to show what answered.
+  const checkMcpIndex = async (url = mcpIndexUrl) => {
+    setMcpIndexCheck({ status: 'checking' });
+    try {
+      await save('mcp.indexUrl', url.trim());
+      const res = await window.surge.discovery.list({ limit: 5 });
+      let host = res.from.url;
+      try { host = new URL(res.from.url).host; } catch { /* keep the URL */ }
+      const failed = res.from.failed ? (() => { try { return new URL(res.from.failed!).host; } catch { return res.from.failed!; } })() : '';
+      if (res.from.kind === 'none') setMcpIndexCheck({ status: 'done', ok: false, text: `Nothing answered (tried ${failed ? `${failed} and ` : ''}${host}).` });
+      else if (res.from.fallback) setMcpIndexCheck({ status: 'done', ok: false, text: `${failed} didn't answer; the panel will use ${host} instead.` });
+      else setMcpIndexCheck({ status: 'done', ok: true, text: `${host} answered${res.total ? ` (${res.total.toLocaleString()} servers)` : ''}.` });
+    } catch {
+      setMcpIndexCheck({ status: 'done', ok: false, text: 'Could not check the source.' });
     }
   };
 
@@ -376,7 +406,35 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
 
         {tab === 'advanced' && (
           <div className="settings-section">
-            <h3>
+            <h3><IconNetwork size={16} /> MCP Server Directory</h3>
+            <div className="api-key-group">
+              <label>Directory URL</label>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <input className="input" placeholder="https://registry.modelcontextprotocol.io" value={mcpIndexUrl}
+                  onChange={e => setMcpIndexUrl(e.target.value)}
+                  onBlur={() => save('mcp.indexUrl', mcpIndexUrl.trim())}
+                  style={{ flex: 1 }} />
+                <button className="btn-primary btn-sm" onClick={() => checkMcpIndex()}
+                  disabled={mcpIndexCheck.status === 'checking'}
+                  style={{ whiteSpace: 'nowrap' }}>
+                  {mcpIndexCheck.status === 'checking' ? <div className="spinner spinner-sm" /> : 'Test & Save'}
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: '6px', marginTop: '6px', flexWrap: 'wrap' }}>
+                <button className="btn-ghost btn-sm" onClick={() => { setMcpIndexUrl('https://mcprating.io'); checkMcpIndex('https://mcprating.io'); }}>mcprating.io</button>
+                <button className="btn-ghost btn-sm" onClick={() => { setMcpIndexUrl('https://registry.modelcontextprotocol.io'); checkMcpIndex('https://registry.modelcontextprotocol.io'); }}>Official MCP Registry</button>
+              </div>
+              <span className="settings-hint">
+                Where the MCP Servers panel finds servers. mcprating.io (the default) adds ratings, safety flags and a start test,
+                and has the same maintainer as Surge; Surge never sends it a partner key. The official MCP Registry lists servers without rating them,
+                and is used whenever the directory doesn't answer. Leave empty for the official registry alone.
+              </span>
+              {mcpIndexCheck.status === 'done' && (
+                <span className="settings-hint" style={{ color: mcpIndexCheck.ok ? 'var(--accent-green)' : 'var(--accent-red)' }}>{mcpIndexCheck.text}</span>
+              )}
+            </div>
+
+            <h3 style={{marginTop: '24px'}}>
               <IconNetwork size={16} /> OpenNodes Registry
               {onpStatus === 'connected' && <span className="badge badge-green" style={{marginLeft: 8, fontSize: '0.6rem'}}>Connected</span>}
               {onpStatus === 'error' && <span className="badge badge-red" style={{marginLeft: 8, fontSize: '0.6rem'}}>Error</span>}
@@ -503,6 +561,10 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
               </span>
               {privateStatus?.error && <span className="settings-hint" style={{ color: 'var(--accent-red)' }}>{privateStatus.error}</span>}
               <label style={{ marginTop: '8px' }}>LAN peers (Ollama servers or OpenNodes nodes)</label>
+              <span className="settings-hint">
+                Their models are listed and can be picked by name. Auto (private) uses only this machine and nodes pinned by their card key,
+                and a node found over mDNS is used only when pinned. Surge can't pin a node yet.
+              </span>
               {(privateStatus?.peers ?? []).map(peer => (
                 <div key={peer} style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px' }}>
                   <code style={{ flex: 1 }}>{peer}</code>
@@ -522,7 +584,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                 Discover LAN machines automatically (mDNS; Windows may ask to allow network access)
               </label>
               {(privateStatus?.discoveredPeers.length ?? 0) > 0 && (
-                <span className="settings-hint">Reachable: {privateStatus!.discoveredPeers.map(p => `${p.name} (${p.kind})`).join(', ')}</span>
+                <span className="settings-hint">Reachable: {privateStatus!.discoveredPeers.map(p => `${p.name} (${p.kind}${p.pinned ? ', pinned' : ''})`).join(', ')}</span>
               )}
             </div>
 
@@ -563,7 +625,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                   </label>
                   <span className="settings-hint">
                     {hub.allowActions
-                      ? `${hub.tools.length} tools: reading and acting in the browser you're signed in to. Turn this off when you don't need it.`
+                      ? `${hub.tools.length} tools: reading and acting in the browser you're signed in to. Each action asks you first, once per site; a script asks every time. Turn this off when you don't need it.`
                       : `${hub.tools.length} read-only tools: the open page, your bookmarks and history.`}
                   </span>
                   <label style={{ marginTop: '8px' }}>Port</label>
@@ -572,6 +634,26 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ selectedModel, models, on
                     <button className="btn-ghost btn-sm" disabled={hubPort === String(hub.port) || !/^\d{4,5}$/.test(hubPort)}
                       onClick={() => configureHub({ port: Number(hubPort) })}>Apply</button>
                   </div>
+                  <label style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    Recent calls
+                    <button className="btn-ghost btn-sm" onClick={loadHubCalls}>Refresh</button>
+                  </label>
+                  {hubCalls.length === 0
+                    ? <span className="settings-hint">No app has used the hub yet.</span>
+                    : (
+                      <table className="hub-calls">
+                        <tbody>
+                          {hubCalls.map(c => (
+                            <tr key={c.id}>
+                              <td>{new Date(c.at).toLocaleString()}</td>
+                              <td><code>{c.tool}</code></td>
+                              <td>{c.scope ?? ''}</td>
+                              <td className={`hub-decision ${c.decision}`}>{HUB_DECISIONS[c.decision] ?? c.decision}{c.ok === false ? ' (failed)' : ''}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
                   <label style={{ marginTop: '12px' }}>Connect an app</label>
                   {hubSnippets.map(sn => (
                     <div key={sn.id} className="hub-snippet">

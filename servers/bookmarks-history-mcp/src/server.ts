@@ -113,7 +113,7 @@ export function createServer(store: SurgeStore): McpServer {
         title: z.string().optional(),
         kind: historyKind.optional(),
         targetRef: z.string().optional(),
-        meta: z.record(z.unknown()).optional(),
+        meta: z.record(z.string(), z.unknown()).optional(),
       },
     },
     async (args) => ok(await store.history.record(args)),

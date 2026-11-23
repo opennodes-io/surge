@@ -1,2 +1,23 @@
-export { DiscoveryClient } from './discovery-client.js';
-export type { IndexServer, IndexCategory, DiscoveryQuery, TrustTier } from './discovery-client.js';
+export {
+  DiscoveryClient,
+  DEFAULT_MCP_INDEX,
+  OFFICIAL_MCP_REGISTRY,
+  connectConfigFor,
+  deriveTrustTier,
+  normalizeIndexServer,
+  normalizeRegistryServer,
+  npmPackageName,
+} from './discovery-client.js';
+export type {
+  IndexServer,
+  IndexCategory,
+  DiscoveryQuery,
+  DiscoveryResult,
+  DiscoveryOrigin,
+  DiscoveryConnect,
+  DiscoveryClientOptions,
+  TrustTier,
+  SafetyBand,
+  StartTest,
+  StartTestOutcome,
+} from './discovery-client.js';

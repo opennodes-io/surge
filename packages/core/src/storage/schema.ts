@@ -149,6 +149,24 @@ export const SCHEMA_STATEMENTS: string[] = [
     origin_device_id TEXT
   )`,
 
+  // Calls other apps made through the Surge hub, and what the user decided. No arguments: typed
+  // text can be a password.
+  `CREATE TABLE IF NOT EXISTS hub_calls (
+    id TEXT PRIMARY KEY,
+    at INTEGER NOT NULL,
+    tool TEXT NOT NULL,
+    risk TEXT NOT NULL,
+    scope TEXT,
+    decision TEXT NOT NULL,
+    ok INTEGER,
+    duration_ms INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    rev INTEGER NOT NULL DEFAULT 1,
+    origin_device_id TEXT
+  )`,
+
   // Reserved for the future sync layer (push/pull bookkeeping per table).
   `CREATE TABLE IF NOT EXISTS sync_state (
     table_name TEXT PRIMARY KEY,
@@ -162,6 +180,7 @@ export const SCHEMA_STATEMENTS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_bookmarks_url ON bookmarks(url)`,
   `CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)`,
   `CREATE INDEX IF NOT EXISTS idx_onp_calls_at ON onp_calls(at)`,
+  `CREATE INDEX IF NOT EXISTS idx_hub_calls_at ON hub_calls(at)`,
 ];
 
 /**

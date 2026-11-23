@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { DiscoveryClient, type IndexServer } from '@surge/core/discovery';
+import { DiscoveryClient, DEFAULT_MCP_INDEX, type IndexServer } from '@surge/core/discovery';
 import { capabilities } from './capabilities';
 
 // Scaffold mobile shell. It reuses platform-neutral @surge/core (here: the discovery
 // client) to prove the shared-core architecture. The full chat/MCP UI will be shared
 // via @surge/ui once extracted; embedded-browser features stay desktop-only.
-const REGISTRY_URL = 'http://localhost:3000';
+const REGISTRY_URL = DEFAULT_MCP_INDEX;
 
 const App: React.FC = () => {
   const [servers, setServers] = useState<IndexServer[]>([]);
@@ -15,7 +15,10 @@ const App: React.FC = () => {
     const client = new DiscoveryClient(REGISTRY_URL);
     client
       .listServers({ sortBy: 'quality', limit: 10 })
-      .then((r) => setServers(r.servers))
+      .then((r) => {
+        setServers(r.servers);
+        if (r.from.kind === 'none') setError('no answer');
+      })
       .catch((e) => setError(String(e)));
   }, []);
 
@@ -30,7 +33,7 @@ const App: React.FC = () => {
       </p>
 
       <h2 style={{ fontSize: 15, marginTop: 20 }}>Top-rated MCP servers</h2>
-      {error && <p style={{ color: '#f87171', fontSize: 12 }}>Registry unreachable ({error}). Start MCP_Index or enable CORS.</p>}
+      {error && <p style={{ color: '#f87171', fontSize: 12 }}>Directory unreachable ({error}). Neither mcprating.io nor the official MCP Registry answered.</p>}
       {servers.length === 0 && !error && <p style={{ opacity: 0.5, fontSize: 12 }}>Loading…</p>}
       <ul style={{ listStyle: 'none', padding: 0 }}>
         {servers.map((s) => (

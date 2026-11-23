@@ -20,10 +20,13 @@ const tests = [
   ['packages/core', 'test/verify-keys-spend-private.ts', 'per-host keys, spend ledger, private mode'],
   ['packages/core', 'test/verify-live-ui.ts', 'Live UI: spec validation, tool result, form prompts'],
   ['packages/core', 'test/verify-approvals.ts', 'approvals: actions ask once per site per chat, scripts every time'],
+  ['packages/core', 'test/verify-local-access.ts', 'private router token and origin checks; hub actions ask first and are logged'],
+  ['packages/core', 'test/verify-discovery.ts', 'MCP discovery: index tiers and safety, official registry fallback, scoped stdio env'],
   ['servers/bookmarks-history-mcp', 'test/smoke.ts', 'standalone bookmarks/history MCP server'],
+  ['servers/bookmarks-history-mcp', 'test/http-access.ts', 'standalone server over HTTP: token, Host and web-page checks, body and session caps'],
 ];
 
-// The server smoke test drives the built dist/stdio.js, so build it first (tsup, well under a second).
+// The server tests drive the built dist/stdio.js and dist/http.js, so build them first (tsup, well under a second).
 const build = spawnSync(process.execPath, [tsup], { cwd: SERVER, stdio: ['ignore', 'ignore', 'inherit'] });
 if (build.status !== 0) {
   console.error('building servers/bookmarks-history-mcp failed');

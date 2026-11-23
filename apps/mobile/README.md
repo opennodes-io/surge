@@ -18,7 +18,7 @@ embedded-browser "browser replacement" surface and the **Web→MCP adapter** (wh
 `BrowserPort`) are disabled (see `src/capabilities.ts`). What *does* work on mobile:
 
 - MCP connections over **HTTP/SSE** (not stdio)
-- **Discovery + MCP Rating** (via the registry REST API — needs CORS enabled on MCP_Index)
+- **Discovery** (mcprating.io's REST API, with the official MCP Registry as the fallback; both must allow the WebView's origin through CORS)
 - **Bookmarks & history** via the standalone `surge-bookmarks-mcp` over HTTP
 
 The full chat/MCP UI will be shared via a future `@surge/ui` package; today the desktop

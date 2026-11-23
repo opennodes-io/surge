@@ -1,8 +1,11 @@
 import { app, BaseWindow, WebContentsView, ipcMain, globalShortcut, Tray, Menu, nativeImage, screen } from 'electron';
 import path from 'path';
 import { registerIpcHandlers } from './ipc-handlers';
+import { hubApprovalsWaiting } from './services/surge-hub-ipc';
+import { SecretStore } from './services/secret-store';
 
 let mainWindow: BaseWindow | null = null;
+let secrets: SecretStore | null = null;
 let appView: WebContentsView | null = null;
 let browserView: WebContentsView | null = null;
 let tray: Tray | null = null;
@@ -139,6 +142,8 @@ function setupTray(): void {
 // Window resize handler
 ipcMain.on('window:resize', (_event, mode: 'compact' | 'expanded') => {
   if (!mainWindow || !appView) return;
+  // A Surge hub card is waiting: the 160px bar would hide it (closing the picker or History asks for it).
+  if (mode === 'compact' && hubApprovalsWaiting()) return;
 
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width: screenW, height: screenH } = primaryDisplay.workAreaSize;
@@ -219,7 +224,7 @@ ipcMain.on('window:maximize', () => {
   appView.webContents.send('window:maximizeChanged', mainWindow.isMaximized());
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!isPrimaryInstance) return;
 
   // Set up application menu with Edit accelerators (Copy/Paste/Cut/SelectAll)
@@ -240,9 +245,12 @@ app.whenReady().then(() => {
   ]);
   Menu.setApplicationMenu(appMenu);
 
+  // Decrypt the saved keys first (safeStorage is async), so the window's first settings request can read them.
+  const store = await SecretStore.open();
+  secrets = store;
   createMainWindow();
   setupTray();
-  registerIpcHandlers(() => browserView);
+  registerIpcHandlers(store, () => browserView, () => ({ window: mainWindow, contents: appView?.webContents ?? null }));
 
   // Global shortcut to summon Surge
   globalShortcut.register('CommandOrControl+Shift+Space', () => {
@@ -263,8 +271,15 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('will-quit', () => {
+app.on('will-quit', (event) => {
   globalShortcut.unregisterAll();
+  // A key saved just before quitting may still be being sealed: let it reach disk (at most 3s), then quit.
+  if (secrets?.writing) {
+    event.preventDefault();
+    const store = secrets;
+    secrets = null; // quit for real next time, even if the write never finishes
+    Promise.race([store.flush(), new Promise((resolve) => setTimeout(resolve, 3000))]).finally(() => app.quit());
+  }
 });
 
 app.on('activate', () => {

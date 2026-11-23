@@ -1,10 +1,20 @@
 import http from 'node:http';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { app, ipcMain } from 'electron';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { toolWireName, READ_ONLY_TOOLS, type McpManager } from '@surge/core';
+import { CallToolRequestSchema, CancelledNotificationSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  toolWireName,
+  READ_ONLY_TOOLS,
+  hubToolRisk,
+  createApprovalGate,
+  declinedMessage,
+  type McpManager,
+  type ApprovalRequest,
+  type ApprovalScope,
+  type HubCallInput,
+  type HubDecision,
+} from '@surge/core';
 import type { SettingsService } from './settings-service';
 import type { SecretStore } from './secret-store';
 
@@ -17,12 +27,15 @@ import type { SecretStore } from './secret-store';
  * - Read-only by default: reading the open page and bookmarks/history. Acting in the browser
  *   (navigate, click, type, run scripts) or writing bookmarks needs `hub.allowActions`, because
  *   it drives the user's logged-in browser.
+ * - Even then, actions ask first, on the same Allow / Deny card as the chat (hubToolRisk): once per
+ *   site until the hub restarts, actions are turned off or the token changes; a script every time.
+ * - Every call is logged (tool, site, decision, time; never the arguments).
+ *
+ * No Electron here, so the hermetic tests drive this class; surge-hub-ipc.ts wires it to the app.
  */
 
 const DEFAULT_PORT = 4766;
 const EXPOSED_SERVERS = ['browser', 'bookmarks'];
-// Tools that only read (READ_ONLY_TOOLS, shared with the chat's approvals in @surge/core).
-// Everything else on the exposed servers changes something.
 const TOKEN_SECRET = 'hub.token';
 const MAX_BODY = 4 * 1024 * 1024;
 
@@ -39,12 +52,46 @@ export interface HubStatus {
   error?: string;
 }
 
+/** How a card was answered: cancelled = the app went away first; no-answer = timed out or the window closed. */
+export type HubAnswer = 'allow' | 'deny' | 'no-answer' | 'cancelled';
+
+export interface HubOptions {
+  version: string;
+  /** The open page's origin ("https://example.com"), or null: what a browser action acts on. */
+  pageOrigin: () => string | null;
+  /** Shows the Allow / Deny card. `signal` aborts when the app that called goes away. */
+  ask: (req: ApprovalRequest, signal: AbortSignal) => Promise<HubAnswer>;
+  /** Records each call; best effort. */
+  log?: (entry: HubCallInput) => void;
+}
+
+type HubSettings = Pick<SettingsService, 'get'>;
+type HubSecrets = Pick<SecretStore, 'getSecret' | 'setSecret' | 'available'>;
+
+/** Where BrowserService.navigateTo would go: same normalisation ("example.com" → https://example.com). */
+function navigationOrigin(url: unknown): string | null {
+  const text = String(url ?? '').trim();
+  if (!text) return null;
+  try {
+    const u = new URL(text.startsWith('http') ? text : `https://${text}`);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.origin : null;
+  } catch {
+    return null;
+  }
+}
+
 export class SurgeHub {
   private server: http.Server | null = null;
   private error: string | undefined;
   private memoryToken: string | null = null;
+  // Sites (and bookmarks) the user allowed for apps using the hub. Never shared with a chat's.
+  private allowed = new Set<string>();
+  // Calls waiting on a card, by JSON-RPC request id. The hub is stateless, so the notifications/cancelled
+  // a client sends when its own request times out arrives on another POST. Ids are per client, so two
+  // apps can share one: a cancel then also cancels the other's card, which only fails safe.
+  private waiting = new Map<string | number, Set<AbortController>>();
 
-  constructor(private mcp: McpManager, private settings: SettingsService, private secrets: SecretStore) {}
+  constructor(private mcp: McpManager, private settings: HubSettings, private secrets: HubSecrets, private opts: HubOptions) {}
 
   private get port(): number { return Number(this.settings.get('hub.port')) || DEFAULT_PORT; }
   private get allowActions(): boolean { return !!this.settings.get('hub.allowActions'); }
@@ -58,7 +105,18 @@ export class SurgeHub {
     return token;
   }
 
-  regenerateToken(): string { return this.newToken(); }
+  regenerateToken(): string {
+    this.forgetApprovals();
+    return this.newToken();
+  }
+
+  /**
+   * The next action on any site asks again (hub restart, actions turned off or on, new token). A new
+   * set, so a card still open from before can't add its site back when it's allowed.
+   */
+  forgetApprovals(): void {
+    this.allowed = new Set();
+  }
 
   private newToken(): string {
     const token = randomBytes(24).toString('base64url');
@@ -72,14 +130,14 @@ export class SurgeHub {
     return this.secrets.available();
   }
 
-  /** The tools a connected app may see and call, namespaced like the chat's ("server__tool"). */
-  private tools(): Array<{ name: string; description: string; inputSchema: any }> {
+  /** The tools a connected app may see and call, namespaced like the chat's ("server__tool"); `all`: actions too, even when off. */
+  private tools(all = false): Array<{ name: string; description: string; inputSchema: any }> {
     const out: Array<{ name: string; description: string; inputSchema: any }> = [];
     for (const server of this.mcp.getConnectedServers()) {
       if (!EXPOSED_SERVERS.includes(server.id) || server.status !== 'connected') continue;
       for (const tool of server.tools) {
         const name = toolWireName(server.id, tool.name);
-        if (!this.allowActions && !READ_ONLY_TOOLS.has(name)) continue;
+        if (!all && !this.allowActions && !READ_ONLY_TOOLS.has(name)) continue;
         out.push({ name, description: `[Surge ${server.name}] ${tool.description}`, inputSchema: tool.inputSchema || { type: 'object', properties: {} } });
       }
     }
@@ -102,6 +160,7 @@ export class SurgeHub {
   /** Starts or stops the server to match the settings. */
   async apply(): Promise<HubStatus> {
     await this.stop();
+    this.forgetApprovals();
     this.error = undefined;
     if (this.settings.get('hub.enabled')) await this.start();
     return this.status();
@@ -131,7 +190,10 @@ export class SurgeHub {
   async stop(): Promise<void> {
     const server = this.server;
     this.server = null;
-    if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (server) {
+      server.closeAllConnections?.();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   }
 
   private authorized(req: http.IncomingMessage): boolean {
@@ -139,6 +201,84 @@ export class SurgeHub {
     const given = Buffer.from(header.startsWith('Bearer ') ? header.slice(7) : '');
     const expected = Buffer.from(this.token());
     return given.length === expected.length && timingSafeEqual(given, expected);
+  }
+
+  /** What an action acts on: opening a page, the site it opens; any other browser action, the open page's site. */
+  private scopeOf(serverId: string, toolName: string, args: Record<string, unknown>): ApprovalScope {
+    if (serverId === 'bookmarks') return { key: 'bookmarks', label: 'your bookmarks and history' };
+    if (toolName === 'navigateTo') {
+      const origin = navigationOrigin(args.url);
+      // A link Surge can't read is allowed for that exact text only.
+      if (!origin) return { key: `open:${String(args.url ?? '')}`, label: String(args.url ?? '').slice(0, 80) || 'a page' };
+      return { key: `site:${origin}`, label: new URL(origin).host };
+    }
+    const origin = this.opts.pageOrigin();
+    return origin ? { key: `site:${origin}`, label: new URL(origin).host } : { key: 'site:none', label: 'the browser' };
+  }
+
+  private record(entry: Omit<HubCallInput, 'at'> & { at?: number }): void {
+    // The tool name is the caller's (an unknown one included), so it's clipped.
+    try { this.opts.log?.({ at: Date.now(), ...entry, tool: entry.tool.slice(0, 120) }); } catch { /* the log is best effort */ }
+  }
+
+  /** One tools/call from another app: refused, run freely (read), or run once the user allows it. */
+  private async callTool(name: string, args: Record<string, unknown>, signal: AbortSignal) {
+    const at = Date.now();
+    const parsed = this.mcp.parseToolName(name);
+    const riskOfName = parsed ? hubToolRisk(parsed.serverId, parsed.toolName) : READ_ONLY_TOOLS.has(name) ? 'read' : 'action';
+    if (!parsed || !this.tools().some((t) => t.name === name)) {
+      const off = this.tools(true).some((t) => t.name === name);
+      this.record({ at, tool: name, risk: riskOfName, scope: null, decision: off ? 'actions-off' : 'unknown', ok: null, durationMs: null });
+      return {
+        isError: true,
+        content: [{ type: 'text', text: off
+          ? `"${name}" acts in the user's browser; it's off. The user can allow actions in Surge: Settings → Advanced → Surge hub.`
+          : `Unknown tool "${name}".` }],
+      };
+    }
+
+    let answer: HubAnswer | null = null;
+    let scope: ApprovalScope | null = null;
+    const gate = createApprovalGate({
+      allowed: this.allowed,
+      risk: hubToolRisk,
+      scope: (serverId, toolName) => (scope = this.scopeOf(serverId, toolName, args)),
+      ask: async (req) => (answer = await this.opts.ask(req, signal)) === 'allow',
+    });
+    const risk = hubToolRisk(parsed.serverId, parsed.toolName);
+    const decision = await gate({ id: randomUUID(), serverId: parsed.serverId, toolName: parsed.toolName, args });
+    const scopeLabel = (scope as ApprovalScope | null)?.label ?? null;
+    const refuse = (d: HubDecision, text: string) => {
+      this.record({ at, tool: name, risk, scope: scopeLabel, decision: d, ok: null, durationMs: null });
+      return { isError: true, content: [{ type: 'text', text }] };
+    };
+    if (!decision.allowed) {
+      if (answer === 'deny') return refuse('declined', decision.message);
+      if (answer === 'cancelled') return refuse('cancelled', 'Cancelled: the request ended before the user answered.');
+      return refuse('no-answer', `The user didn't answer in Surge, so ${parsed.toolName} didn't run. Don't retry it unasked.`);
+    }
+    // Things that can change while the card waits: the app gave up, the user turned actions off, or
+    // the page moved on, so the action would land on a site the card didn't name.
+    if (signal.aborted) return refuse('cancelled', 'Cancelled: the request ended before the action ran.');
+    if (risk !== 'read' && !this.allowActions) return refuse('actions-off', declinedMessage(`${parsed.toolName}: actions were turned off`));
+    const askedAbout = scope as ApprovalScope | null;
+    if (decision.asked && askedAbout) {
+      const now = this.scopeOf(parsed.serverId, parsed.toolName, args);
+      if (now.key !== askedAbout.key) {
+        return refuse('page-changed', `The page moved to ${now.label} while the user was deciding about ${askedAbout.label}, so ${parsed.toolName} didn't run.`);
+      }
+    }
+
+    const d: HubDecision = risk === 'read' ? 'read' : decision.asked ? 'allowed' : 'remembered';
+    const started = Date.now();
+    try {
+      const result = await this.mcp.callTool(parsed.serverId, parsed.toolName, args);
+      this.record({ at, tool: name, risk, scope: scopeLabel, decision: d, ok: !result?.isError, durationMs: Date.now() - started });
+      return result;
+    } catch (err) {
+      this.record({ at, tool: name, risk, scope: scopeLabel, decision: d, ok: false, durationMs: Date.now() - started });
+      throw err;
+    }
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse, port: number): Promise<void> {
@@ -160,22 +300,29 @@ export class SurgeHub {
       return;
     }
     const body = await readJson(req);
+    // The calling app gone (it timed out or quit): a card waiting for this request goes away.
+    const gone = new AbortController();
+    res.on('close', () => gone.abort());
 
-    const mcp = new Server({ name: 'surge', version: app.getVersion() }, { capabilities: { tools: {} } });
+    const mcp = new Server({ name: 'surge', version: this.opts.version }, { capabilities: { tools: {} } });
     mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: this.tools() }));
-    mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const name = request.params.name;
-      if (!this.tools().some((t) => t.name === name)) {
-        const action = EXPOSED_SERVERS.some((s) => name.startsWith(`${s}__`)) && !READ_ONLY_TOOLS.has(name);
-        return {
-          isError: true,
-          content: [{ type: 'text', text: action
-            ? `"${name}" acts in the user's browser; it's off. The user can allow actions in Surge: Settings → Advanced → Surge hub.`
-            : `Unknown tool "${name}".` }],
-        };
+    mcp.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      const cancel = new AbortController();
+      const id = extra.requestId;
+      let calls = this.waiting.get(id);
+      if (!calls) this.waiting.set(id, (calls = new Set()));
+      calls.add(cancel);
+      try {
+        return await this.callTool(request.params.name, (request.params.arguments ?? {}) as Record<string, unknown>, AbortSignal.any([gone.signal, cancel.signal]));
+      } finally {
+        calls.delete(cancel);
+        if (!calls.size) this.waiting.delete(id);
       }
-      const parsed = this.mcp.parseToolName(name)!;
-      return this.mcp.callTool(parsed.serverId, parsed.toolName, request.params.arguments ?? {});
+    });
+    // A client that gave up on a request (its timeout) says so in a separate POST.
+    mcp.setNotificationHandler(CancelledNotificationSchema, async (note) => {
+      const id = note.params.requestId;
+      if (id !== undefined) for (const call of this.waiting.get(id) ?? []) call.abort();
     });
 
     const transport = new StreamableHTTPServerTransport({
@@ -204,27 +351,4 @@ function readJson(req: http.IncomingMessage): Promise<unknown> {
     });
     req.on('error', reject);
   });
-}
-
-/** Creates the hub, starts it if enabled, and wires its IPC (Settings → Advanced → Surge hub). */
-export function registerHubHandlers(mcp: McpManager, settings: SettingsService, secrets: SecretStore): SurgeHub {
-  const hub = new SurgeHub(mcp, settings, secrets);
-  hub.apply().catch((err) => console.error('[surge] hub failed to start:', err));
-  app.on('before-quit', () => { hub.stop().catch(() => {}); });
-
-  ipcMain.handle('hub:status', () => hub.status());
-  ipcMain.handle('hub:configure', async (_e, cfg: { enabled?: boolean; port?: number; allowActions?: boolean }) => {
-    if (cfg.enabled !== undefined) settings.set('hub.enabled', !!cfg.enabled);
-    if (cfg.allowActions !== undefined) settings.set('hub.allowActions', !!cfg.allowActions);
-    if (cfg.port !== undefined) {
-      const port = Math.trunc(Number(cfg.port));
-      if (port >= 1024 && port <= 65535) settings.set('hub.port', port);
-    }
-    // Enabling, disabling or a new port restarts; tool visibility is read per request.
-    if (cfg.enabled !== undefined || cfg.port !== undefined) return hub.apply();
-    return hub.status();
-  });
-  ipcMain.handle('hub:token', () => hub.token());
-  ipcMain.handle('hub:regenerateToken', () => hub.regenerateToken());
-  return hub;
 }
