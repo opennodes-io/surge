@@ -86,7 +86,7 @@ live model replies are compressed to about a second each; everything else plays 
 
 Verified (by the scripts in `packages/core/test/` and in the running app):
 
-- Live discovery from `registry.opennodes.io`; Auto routes among the **admitted** nodes (3 today) — plus imported
+- Live discovery from `registry.opennodes.io`; Auto routes among the **admitted** nodes (2 today: `io.opennodes.helsinki` and `io.opennodes.demo-node`) — plus imported
   catalogs you have saved a key for.
 - Pinned invocation; on `409 price_changed` the node's card is fetched, schema-validated and signature-verified, the
   policy re-applied, and the call retried once or the change surfaced.
@@ -106,9 +106,15 @@ Don't claim:
 
 ```bash
 pnpm --filter @surge/desktop build
-node scripts/launch-kit/capture.mjs            # or --stills / --demo
+node scripts/launch-kit/capture.mjs            # or --stills / --demo / --hero (the browser + receipt still only)
+node scripts/launch-kit/capture.mjs --hero --node=io.opennodes.demo-node   # that node instead of Auto
 ```
 
 Needs ffmpeg on PATH (or `FFMPEG=`), network access, and a local Ollama on `:11434` for the private-mode scenes
 (skipped otherwise). The app runs in a throwaway profile; your settings and keys are not touched. Model replies come
 from live CPU nodes, so a full run takes several minutes.
+
+A run fails unless each OpenNodes reply it shows was served by a node the registry lists right now as verified
+(or attested) and free, so a delisted or key-only node never reaches the media. The live nodes are 1B models: a
+hero take sometimes answers without reading the page, or navigates away (the run then fails); check the stills and
+run again if needed. `io.opennodes.helsinki` (gemma3:1b) answers 502 when tools are sent, so Auto skips it here.

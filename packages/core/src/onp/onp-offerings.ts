@@ -86,6 +86,15 @@ export function normalizeOffering(o: any): OnpOffering {
   };
 }
 
+/**
+ * True when the offering can be called: an http(s) OpenAI-compatible endpoint. The registry also
+ * lists imported models it can't invoke (`invocable: false`, only a docs link); they're skipped.
+ */
+export function isInvocableOffering(o: Pick<OnpOffering, 'endpointBase' | 'raw'>): boolean {
+  if (o.raw?.invocable === false) return false;
+  try { return /^https?:$/.test(new URL(o.endpointBase).protocol); } catch { return false; }
+}
+
 /** True when `next` costs more than `prev` on either side, or is in another currency. */
 export function onpPriceRaised(prev: OnpPricing, next: OnpPricing): boolean {
   return next.currency !== prev.currency
