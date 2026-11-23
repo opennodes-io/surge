@@ -201,7 +201,7 @@ Verification for MCP discovery and stdio servers:
     - Verified in the dev build and in the packaged `win-unpacked` exe, on temp profiles against the real local Ollama: `gemma4`, `gemma3:12b` ("tools via prompt") and `llama3.2` were listed.
     - Against the app's live router, a page-origin `POST /router/peers` got 401, its preflight 403 with no CORS header, and `/router/catalog` without the token 401.
     - `electron-builder --win --dir` passes `check-node-modules.cjs` (34 packages), under both the pnpm and npm collectors. `app.asar` holds one copy each of router 0.1.27, core 0.1.24 and cli 0.1.33.
-    - Not checked: an installed copy. Installing would have replaced the user's installed Surge.
+    - On the installed copy (2026-11-22, the Electron 45 build of main, temp profile): the router started, `/router/peers` without the token got 401, and a page origin got 403 with no CORS grant. Listing the local Ollama models wasn't checked there.
   - Every other model is refused, and the registry isn't contacted while private mode is on.
   - The previous model is restored when private mode is turned off. Private mode is restored at startup.
   - Static LAN peers and opt-in mDNS are set in Settings → Advanced → Private mode.
@@ -381,7 +381,7 @@ Verification for MCP discovery and stdio servers:
     - Without this commit, 108 alerts stay open, and zod's 2 highs are the only shipped ones outside Electron.
   - **`pnpm.overrides`** in the root `package.json` are keyed to the vulnerable range only, e.g. `fast-uri@>=3.0.0 <3.1.9`. pnpm applies a range key to every spec that *intersects* it, peers included, so don't add a key that overlaps another major or a `>=` peer (an esbuild one did and was dropped). Delete an override once its parent's own range moves past it.
   - **Left:**
-    - Electron 35.7.5: 89 alerts, plus Chromium 134, out of support since 2025-09. Fixed on `deps/electron-45` (below).
+    - Electron 35.7.5: 89 alerts, plus Chromium 134, out of support since 2025-09. Fixed by Electron 45.4.1 (below, [#38](https://github.com/opennodes-io/surge/pull/38)).
     - `tar` 6 under `@capacitor/cli` 6 (the remaining critical, mobile tooling only); the fix is Capacitor 7.
     - `extract-zip` (no fix), minimatch 11 / glob 14 / tsup 9 majors (build only).
   - **SDK 1.30–1.32 behaviour changes:**
@@ -389,17 +389,34 @@ Verification for MCP discovery and stdio servers:
     - client redirects stay on the endpoint's origin;
     - OAuth credentials are bound to their issuer, and old ones still work.
     - The hub reads its own body (4 MiB), so the SDK's new HTTP limit doesn't apply. The standalone server's HTTP mode does the same, with the same cap.
-  - **Electron 45.4.1** (2026-11-21, branch `deps/electron-45`, cut from `deps/security-0.1.8`; for 0.1.9): Chromium 156, Node 24.22.3, supported until about April 2027.
+  - **Electron 45.4.1** (2026-11-21; on `main` since [#38](https://github.com/opennodes-io/surge/pull/38), merged 2026-11-22; planned as 0.1.9, see "What a good next session does"): Chromium 156, Node 24.22.3, supported until about April 2027.
     - Closes all 89 Electron alerts and extract-zip's 2 (Electron 45 uses `@electron/get` 5 and `@electron-internal/extract-zip`). Open alerts 106 → 15, none shipped; `pnpm audit --prod` is clean. What's left is `tar` 6 (Capacitor), minimatch, glob and esbuild, all tooling.
     - **`SecretStore` uses safeStorage's async methods** (commit "Keychain: …", droppable; 45 deprecates the sync ones and 46 removes them). `SecretStore.open()` is awaited in main before the window and the IPC handlers exist, and decrypts everything once; reads are served from memory, so `SettingsPort`, the hub token and the OAuth store stay synchronous. Trade-off: every saved key now sits decrypted in main-process memory from startup (before, each read decrypted on demand). Writes are sealed and saved in order in the background, `will-quit` waits up to 3s for them, and the plaintext migration drops the settings-file copy only once the keychain copy is on disk.
     - Ciphertext is the same either way ("v10", AES-GCM with the key in `<userData>/Local State`): the 0.1.8 build's keys read in 45, and 45's read in 35, so going back a version keeps them. `shouldReEncrypt` was false.
-    - `clipboard.writeText` is awaited (a Promise since 44). The sandboxed preload uses none of the shims 45 removed. libsql's binding is N-API; `node:sqlite` isn't used.
+    - `clipboard.writeText` is awaited (a Promise since 44). In 45 the main-process `clipboard` is async throughout: `read`, `readText`, `has`, `write` and `writeText` return Promises, and the old sync calls such as `availableFormats` are gone (`(await clipboard.read()).flatMap((i) => i.types)` lists the formats). Surge calls only `writeText`. The sandboxed preload uses none of the shims 45 removed. libsql's binding is N-API; `node:sqlite` isn't used.
     - 42+ no longer downloads its binary on install (see "Driving the real app"). electron-builder 26.15.3 packages 45 unchanged; `check-node-modules` passes with the same 34 packages.
     - electron-vite 3.1 knows Electron up to 35, so it targets `node22.14` / `chrome134` for 45. That's conservative and works.
     - **WebMCP** (`document.modelContext`): absent by default in 45, in a test window and in Surge's browser view. Behind `--enable-blink-features=WebMCP`, `--enable-features=WebMCP` or `WebMCPTesting`, or `--enable-experimental-web-platform-features`, a page gets `registerTool`, `getTools` and `executeTool`. Surge ships no such switch.
     - Verified on a copy of the packaged app outside the repo (26 CDP checks): the 17 of 0.1.8, plus libsql writes and reads, the clipboard, the browser view's page tools (`getPageContent` / `getLinks` in the chat path and through the hub), and no Electron deprecation warning in the main log. Also the keychain across 35 → 45 → 45 → 35 on one profile (a vLLM key reaching a mock endpoint, the hub token, the plaintext migration), and the quit flush forced through `--inspect`: a 1.5s seal exits at 1.6s with the key saved; a seal that never ends exits at the 3s cap. `pnpm dev` from a missing `path.txt` fetched the binary and ran 45.
     - An attached `--inspect` session holds the process open at quit (Node waits for the debugger to disconnect), so detach before timing an exit.
-    - Not yet: an installed copy (it replaces the user's Surge). Packaging ran with the npm binary present, which CI's runner won't have; electron-builder downloads its own zip either way.
+    - **Installed copy** (2026-11-22, with the user's OK): the installer was built from `main` 4fe6de7 in a fresh worktree, so without the npm Electron binary, as on CI (CI's Windows packaging passed on #38 too). It is 116 MB, `check-node-modules` matches 34 packages, and it installed with `/S` over 0.1.7. The build still says 0.1.7, since nothing is bumped. Driven over CDP, with `--inspect` on the main process for versions, the clipboard and `app.quit()`:
+      - **The user's real `%APPDATA%\Surge`, read only (15 of 15):**
+        - It runs from the install folder on Electron 45.4.1, Chromium 156.0.8078.100 and Node 24.22.3.
+        - The Gemini key 0.1.7 sealed (Electron 35, sync API) decrypts, and `surge-secrets.json` is byte-identical after the run (no re-seal).
+        - The settings read, and the only key added to the file is `mcp.indexUrlMigrated`. The real `surge.db` reads, and discovery works.
+        - A second launch exits. `app.quit()` exits in under 0.5s, with no renderer errors and no Electron deprecation warning.
+      - **A temp profile (26 of 28):**
+        - The 0.1.8 checks pass: the index migration, discovery, the router, and the hub (read, card, Deny, log, Settings → Advanced).
+        - libsql writes and reads, and the data is still there after a restart.
+        - A new key is sealed on disk, not stored as plain text, and reads after a restart.
+        - The single-instance lock works, and two quits are clean.
+        - The 2 failures were one warning in each run's main log: Node's punycode deprecation (below), not an Electron one. Neither run logged an Electron deprecation.
+      - **Not checked on the installed copy:**
+        - the clipboard, because it held data copied from a browser that a text probe would have replaced;
+        - the hub and private mode on the real profile, since turning them on changes its settings;
+        - a real chat;
+        - the browser view's page tools, which were checked on the packaged copy above.
+    - Node's `[DEP0040]` punycode warning at startup isn't from Electron 45. It comes from `openai` 4 → `node-fetch` 2 → `whatwg-url` 5 → `tr46` 0.0.3, which is bundled into `main.js`, and 0.1.7's `app.asar` has the same `require("punycode")`. It goes away with openai 5, which uses the built-in `fetch`.
 - **Social channels** (`apps/desktop/src/main/services/channels.ts`, `ChannelsPanel.tsx`): Instagram, TikTok, X, Facebook, YouTube, LinkedIn and Reddit, read in the embedded browser with the user's own sign-in (default session cookies).
   - "Signed in" means the site's session cookie is present (`sessionid`, `auth_token`, `c_user`, `LOGIN_INFO`, `li_at`, `reddit_session`). Sign out clears the domain's cookies.
   - **Summarize my feed** opens the feed and asks the chat to use `browser__collectFeed`. The tool waits up to 8s for posts, scrolls ≤ 8 screens, collects the outermost post elements (`article`, `[role=article]`, tweets, `ytd-*-renderer`, `shreddit-post`, LinkedIn and TikTok feed items), dedupes them, and returns text plus permalink.
@@ -470,7 +487,7 @@ Verification for MCP discovery and stdio servers:
   - Identity: product name "Surge", version 0.1.7, appId `io.opennodes.surge`. One-click per-user install into `%LOCALAPPDATA%\Programs\surge`, which comes from `extraMetadata.name`; otherwise the folder name comes from `@surge/desktop`. 88 MB. `publish: null`, so releases are never uploaded as a side effect of a build.
   - Data: the installed app uses `%APPDATA%\Surge`. On this machine that's the same folder as an old March 2026 "surge" build's settings (Windows paths are case-insensitive), so the installed app inherits them. Unpackaged runs use `%APPDATA%\Surge Dev` unless `--user-data-dir` is given (`main.ts`), so dev never migrates the installed app's `surge.db`.
   - The main process takes a single-instance lock: a second launch focuses the window. The window and tray icons load from `resources/`, rendered from `packaging/icon.svg` by `electron packaging/render-icons.cjs`.
-  - **Electron is pinned exactly** (45.4.1 on `deps/electron-45`; 35.7.5 before): electron-builder rejects a range it can't resolve through the hoisted layout.
+  - **Electron is pinned exactly** (45.4.1; 35.7.5 before #38): electron-builder rejects a range it can't resolve through the hoisted layout.
   - **What ships:** only `dependencies` become node_modules: `@libsql/client` (native), `@opennodes/*` (must not be bundled), and `ajv` / `ajv-formats`. Everything else main uses (`@surge/core`, openai, the MCP SDK, Gemini, React) is a devDependency bundled by electron-vite.
   - **Why:** electron-builder's pnpm collector is wrong under `node-linker=hoisted`. It put top-level versions where nested duplicates belong (6 cases, including `openai`→`node-fetch` 3 instead of 2). It also dropped `ajv` once its other user became dev-only. One wrong copy, `formdata-node`→`web-streams-polyfill` 3.3.3, replaces `globalThis.ReadableStream`, and every `fetch()` body read in the packaged main then hangs: no registry models, no receipts.
   - **`packaging/check-node-modules.cjs`** (afterPack) fails the build when a shipped package is missing a dependency or differs from what Node resolves in the source tree. Keep it.
@@ -503,7 +520,7 @@ Verification for MCP discovery and stdio servers:
    - Code signing is the user's decision (a certificate or Azure Trusted Signing). Unsigned, SmartScreen warns about an unknown publisher.
    - Next: 0.1.8, with the MCP discovery and stdio environment fixes and the dependency security updates ("Known state"). Nothing is bumped yet. The review's signal afterwards: installer downloads of 0.1.8.
      - Release notes from SDK 1.32: a remote server that redirects to another origin no longer connects, and a single stdio message over 10 MiB is refused.
-   - Then Electron 35 → 45 as its own release, 0.1.9: branch `deps/electron-45` (see "Dependency security"). `SecretStore` already uses the async `safeStorage` methods there. Still to do: test the installed copy (keychain against the real `%APPDATA%\Surge`, libsql, router, hub, single-instance lock), with the user's OK since it replaces their Surge.
+   - Electron 35 → 45 was planned as its own release, 0.1.9, but it has been on `main` since #38 (2026-11-22). A release cut from `main` now ships it together with 0.1.8's changes, and whether to ship it with 0.1.8 or hold it back is the user's call. The installed copy is tested ("Dependency security" → Electron 45.4.1).
    - Later: auto-update (electron-updater needs a `publish` provider), then macOS and Linux builds once someone has tested them.
    - The launch kit is live on opennodes.io ([opennodes-io/opennodes#1](https://github.com/opennodes-io/opennodes/pull/1)). To refresh its assets, rerun `scripts/launch-kit/capture.mjs` and open a PR on the opennodes repo; merging to its `main` deploys the site.
 2. **Follow-ups:**
