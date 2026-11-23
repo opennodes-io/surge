@@ -50,6 +50,7 @@ interface OnpCallContext {
   ceiling: number;               // most the call could cost; counted when no verified receipt says otherwise
   startedAt: number;
   advisor?: OnpCallRecord['advisor'];
+  promptTools?: boolean;         // the tools went in the prompt: the reply carries <tool_call> blocks
 }
 
 // Nominal request for marking listed offerings the policy would block (the real check, per
@@ -61,6 +62,7 @@ const NOMINAL_INPUT_TOKENS = 1000;
 const ONP_KEY_PREFIX = 'onp.key.';
 const HOSTNAME = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
 const hostOf = (o: Pick<OnpOffering, 'endpointBase'>) => new URL(o.endpointBase).hostname;
+const onpToolKey = (o: Pick<OnpOffering, 'key' | 'cardRevision'>) => `${o.key}@${o.cardRevision}`;
 
 /** Private mode's advisor model: routes only to local and LAN models (served by @opennodes/ollama-router). */
 export const PRIVATE_AUTO_MODEL = 'private:auto-private';
@@ -107,6 +109,29 @@ function toolsRefused(err: any, viaRouter: boolean): boolean {
   const msg = String(err?.message ?? '');
   if (/tool_choice|tool-call-parser|enable-auto-tool|does not support tools/i.test(msg)) return true;
   return viaRouter && /upstream 400/.test(msg);
+}
+
+/**
+ * OpenAI client for ONP nodes. A node answers errors as problem+json ({title, detail}), but the SDK
+ * keeps only an `{error: …}` body, so a node's reason ("engine returned 400: … does not support
+ * tools") was reduced to "502 status code (no body)". Here title and detail reach the message.
+ */
+class OnpOpenAI extends OpenAI {
+  protected override makeStatusError(status: number | undefined, error: Object | undefined, message: string | undefined, headers: any) {
+    const p: any = error;
+    if (p && typeof p === 'object' && !('error' in p) && (typeof p.title === 'string' || typeof p.detail === 'string')) {
+      const text = [p.title, p.detail].filter((s) => typeof s === 'string' && s).join(': ').slice(0, 500);
+      return super.makeStatusError(status, { error: { message: text, type: p.title, code: p.title } }, message, headers);
+    }
+    return super.makeStatusError(status, error, message, headers);
+  }
+}
+
+/** A copy of the request with its tools described in the prompt; `params` is left as it was. */
+function withPromptTools(params: any): any {
+  const copy = { ...params, messages: params.messages.map((m: any) => ({ ...m })) };
+  describeToolsInPrompt(copy, params.tools ?? []);
+  return copy;
 }
 
 const TOOL_CALL_OPEN = '<tool_call>';
@@ -267,6 +292,9 @@ export class AiService {
   private onpCalls: OnpCallRecord[] = [];              // this session's settled calls
   private onpCallListeners = new Set<(call: OnpCallRecord) => void>();
   private onpPool: string[] = [];                      // offerings the Auto model routes over
+  // Offerings whose engine refused `tools` ("key@revision": a new card may serve another model).
+  // Their tool turns describe the tools in the prompt; Auto prefers a node that takes them natively.
+  private onpPromptToolsOnly = new Set<string>();
   private secrets: SecretStorePort | null;
 
   constructor(settings: SettingsPort, secrets: SecretStorePort | null = null) {
@@ -337,6 +365,7 @@ export class AiService {
     this.onpRegistry = new OnpRegistryClient(onpUrl);
     this.onpOfferings.clear();
     this.onpClients.clear();
+    this.onpPromptToolsOnly.clear();
     this.onpModels = [];
     this.onpPool = [];
     this.onpLoadedAt = 0;
@@ -413,8 +442,11 @@ export class AiService {
     const onp = this.onpModels.map((m) => {
       const offering = this.onpOfferings.get(m.id.slice(4));
       if (!offering) return m;
-      const notes = [keyed.includes(hostOf(offering)) ? 'your key' : '', checkOnpPolicy(offering, policy, bounds) ? 'blocked by your spend policy' : '']
-        .filter(Boolean);
+      const notes = [
+        keyed.includes(hostOf(offering)) ? 'your key' : '',
+        this.onpPromptToolsOnly.has(onpToolKey(offering)) ? 'tools via prompt' : '',
+        checkOnpPolicy(offering, policy, bounds) ? 'blocked by your spend policy' : '',
+      ].filter(Boolean);
       return notes.length ? { ...m, description: `${m.description} · ${notes.join(' · ')}` } : m;
     });
     return [...(await this.withSetupNotes(this.getAvailableModels())), ...onp];
@@ -607,7 +639,7 @@ export class AiService {
     let client = this.onpClients.get(offering.endpointBase);
     if (!client) {
       const key = await this.secrets?.getSecret(ONP_KEY_PREFIX + hostOf(offering));
-      client = new OpenAI({
+      client = new OnpOpenAI({
         apiKey: key || 'not-required',
         baseURL: offering.endpointBase,
         // The SDK resends 409s unchanged; ONP's 409 needs a re-resolved pin instead (invokeOnp).
@@ -705,22 +737,57 @@ export class AiService {
     // Auto has an empty pool and offerings are "not in the current model list" until the picker
     // happens to refresh, while the renderer still lists them.
     if (this.onpLoadedAt === 0) await this.refreshOnpModels();
-    if (modelKey !== ONP_AUTO_MODEL) return this.invokeOnp(this.getOnpOffering(modelKey), params);
+    if (modelKey !== ONP_AUTO_MODEL) {
+      // A model picked by name keeps its tools: refused natively, they go in the prompt.
+      const offering = this.getOnpOffering(modelKey);
+      if (!params.tools) return this.invokeOnp(offering, params);
+      if (this.onpPromptToolsOnly.has(onpToolKey(offering))) return this.invokeOnp(offering, params, undefined, true);
+      try {
+        return await this.invokeOnp(offering, params);
+      } catch (err: any) {
+        if (!toolsRefused(err, false)) throw err;
+        const current = this.noteOnpToolsRefused(offering);
+        return this.invokeOnp(current, params, undefined, true);
+      }
+    }
 
+    // On a tool turn, Auto places the request on a node that takes tools natively. Only when none
+    // does are the picks that refused them tried again with the tools in the prompt.
     const pool = this.onpPool.map((k) => this.onpOfferings.get(k)).filter((o): o is OnpOffering => !!o);
     const advice = adviseOnp(pool, params.messages ?? [], this.getOnpPolicy());
     const skipped: string[] = [];
+    const refused: typeof advice.picks = [];
+    const advisorFor = (pick: (typeof advice.picks)[number]) => ({
+      taskClass: advice.features.task_class, score: pick.score, reasons: pick.reasons,
+      considered: advice.considered, eligible: advice.eligible, skipped: [...skipped],
+    });
     for (const pick of advice.picks) {
       const offering = this.onpOfferings.get(pick.key);
       if (!offering) continue;
-      const advisor = {
-        taskClass: advice.features.task_class, score: pick.score, reasons: pick.reasons,
-        considered: advice.considered, eligible: advice.eligible, skipped: [...skipped],
-      };
+      if (params.tools && this.onpPromptToolsOnly.has(onpToolKey(offering))) {
+        refused.push(pick);
+        skipped.push(`${pick.key}: no native tool calling`);
+        continue;
+      }
       try {
-        return await this.invokeOnp(offering, params, advisor);
+        return await this.invokeOnp(offering, params, advisorFor(pick));
       } catch (err: any) {
-        skipped.push(`${pick.key}: ${err?.message ?? err}`);
+        if (params.tools && toolsRefused(err, false)) {
+          this.noteOnpToolsRefused(offering);
+          refused.push(pick);
+          skipped.push(`${pick.key}: no native tool calling`);
+        } else {
+          skipped.push(`${pick.key}: ${err?.message ?? err}`);
+        }
+      }
+    }
+    for (const pick of refused) {
+      const offering = this.onpOfferings.get(pick.key);
+      if (!offering) continue;
+      try {
+        return await this.invokeOnp(offering, params, advisorFor(pick), true);
+      } catch (err: any) {
+        skipped.push(`${pick.key} (tools via prompt): ${err?.message ?? err}`);
       }
     }
     throw new Error(advice.picks.length
@@ -733,21 +800,25 @@ export class AiService {
    * ONP-4 409 handling — re-resolve the offering from the node's verified card, re-apply the
    * policy at the new price, and retry once, or surface why not. `offering-mismatch` is surfaced.
    */
-  private async invokeOnp(offering: OnpOffering, params: any, advisor?: OnpCallRecord['advisor']): Promise<{ data: any; onp: OnpCallContext }> {
+  private async invokeOnp(
+    offering: OnpOffering, params: any, advisor?: OnpCallRecord['advisor'], promptTools = false,
+  ): Promise<{ data: any; onp: OnpCallContext }> {
     const client = await this.getOnpClient(offering);
     const startedAt = Date.now();
+    // The policy is checked on what is actually sent: with prompt tools, the tools are in the messages.
+    const request = promptTools && params.tools ? withPromptTools(params) : params;
     const send = async (pinned: OnpOffering, preface?: string) => {
-      const ceiling = this.enforceOnpPolicy(pinned, params, preface);
-      const body = { ...params, model: pinned.bindingModelId };
+      const ceiling = this.enforceOnpPolicy(pinned, request, preface);
+      const body = { ...request, model: pinned.bindingModelId };
       const { data, response } = await client.chat.completions.create(body, this.onpPinHeaders(pinned)).withResponse();
-      return { data, onp: { offering: pinned, receiptRef: response.headers.get('onp-receipt'), ceiling, startedAt, advisor } };
+      return { data, onp: { offering: pinned, receiptRef: response.headers.get('onp-receipt'), ceiling, startedAt, advisor, promptTools: request !== params } };
     };
     try {
       return await send(offering);
     } catch (err: any) {
       if (err?.status !== 409) throw err;
-      // The SDK keeps only `{error: …}` bodies, so the node's problem+json title is lost. The card
-      // decides instead: a newer revision means price_changed, the same one offering-mismatch.
+      // The card decides, not the node's problem+json title: a newer verified revision means
+      // price_changed, the same one offering-mismatch.
       const fresh = await this.onpRegistry!.resolveCardOffering(offering);
       if (!fresh) throw new Error(`${offering.nodeId} no longer offers ${offering.offeringId}. Refresh models.`);
       if (fresh.cardRevision === offering.cardRevision) {
@@ -767,6 +838,16 @@ export class AiService {
         throw new Error(`${offering.nodeId} rejected the re-resolved pin for ${offering.key} (revision ${fresh.cardRevision}).`);
       }
     }
+  }
+
+  /**
+   * Remembers that an offering's engine refused `tools`, against the card it is pinned to now
+   * (a 409 before the refusal re-pins it), and returns that offering for the prompt-tools retry.
+   */
+  private noteOnpToolsRefused(offering: OnpOffering): OnpOffering {
+    const current = this.onpOfferings.get(offering.key) ?? offering;
+    this.onpPromptToolsOnly.add(onpToolKey(current));
+    return current;
   }
 
   getAvailableModels(): AiModel[] {
@@ -894,13 +975,15 @@ export class AiService {
       let onp: OnpCallContext | undefined;
       // Models without native tool calling get the tools described in the prompt and answer with
       // <tool_call> blocks: a private model whose capabilities say so from the first request; vLLM,
-      // Ollama Local and private models whose server refuses the tools, on the retry.
+      // Ollama Local and private models whose server refuses the tools, on the retry. ONP nodes do
+      // this inside createCompletion, per offering, and say so in the call context.
       const privateName = modelKey.startsWith('private:') ? modelKey.slice('private:'.length) : null;
       let usePromptBasedTools = !!params.tools && privateName !== null && this.privateToolSupport.get(privateName) === false;
       if (usePromptBasedTools) describeToolsInPrompt(params, tools ?? []);
 
       try {
         ({ data: stream, onp } = await this.createCompletion(modelKey, client, params));
+        if (onp?.promptTools) usePromptBasedTools = true;
       } catch (err: any) {
         const ownServer = modelKey === 'vllm-custom' || modelKey === 'ollama-local' || privateName !== null;
         if (params.tools && ownServer && toolsRefused(err, privateName !== null)) {
